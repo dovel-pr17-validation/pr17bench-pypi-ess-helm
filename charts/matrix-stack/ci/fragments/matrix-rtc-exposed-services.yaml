@@ -1,0 +1,24 @@
+# Copyright 2025 New Vector Ltd
+# Copyright 2025-2026 Element Creations Ltd
+#
+# SPDX-License-Identifier: AGPL-3.0-only
+
+matrixRTC:
+  sfu:
+    exposedServices:
+      rtcTcp:
+        port: 31000
+      rtcMuxedUdp:
+        port: 31001
+      rtcUdp:
+        enabled: true
+        portRange:
+          endPort: 30050
+          startPort: 30000
+      turnTLS:
+        enabled: true
+        port: 31002
+        domain: turn.{{ $.Values.serverName }}
+      turn:
+        enabled: true
+        port: 31003

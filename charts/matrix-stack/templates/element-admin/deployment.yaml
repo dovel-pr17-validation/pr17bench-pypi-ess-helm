@@ -1,0 +1,87 @@
+{{- /*
+Copyright 2025 New Vector Ltd
+Copyright 2025-2026 Element Creations Ltd
+
+SPDX-License-Identifier: AGPL-3.0-only
+*/ -}}
+{{- with .Values.elementAdmin -}}
+{{- if .enabled -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+{{- with .annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+{{- end }}
+  labels:
+    {{- include "element-io.element-admin.labels" (dict "root" $ "context" .) | nindent 4 }}
+  name: {{ $.Release.Name }}-element-admin
+  namespace: {{ $.Release.Namespace }}
+spec:
+  {{ include "element-io.ess-library.workloads.commonSpec" (dict "root" $ "context" (dict "nameSuffix" "element-admin" "kind" "Deployment" "componentValues" .)) | nindent 2 }}
+  template:
+    metadata:
+      labels:
+        {{- include "element-io.element-admin.labels" (dict "root" $ "context" (dict "image" .image "labels" .labels "withChartVersion" false)) | nindent 8 }}
+{{- with .annotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+{{- end }}
+    spec:
+{{- include "element-io.ess-library.pods.commonSpec" (dict "root" $ "context" (dict "componentValues" . "instanceSuffix" "element-admin" "kind" "Deployment")) | nindent 6 }}
+{{- with .extraInitContainers }}
+      initContainers:
+      {{- toYaml . | nindent 6 }}
+{{- end }}
+      containers:
+      - name: element-admin
+        {{- include "element-io.ess-library.pods.image" (dict "root" $ "context" .image) | nindent 8 }}
+        {{- include "element-io.ess-library.pods.env" (dict "root" $ "context" (dict "componentValues" . "componentName" "element-admin")) | nindent 8 }}
+{{- with .containersSecurityContext }}
+        securityContext:
+          {{- toYaml . | nindent 10 }}
+{{- end }}
+        ports:
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+        livenessProbe: {{- include "element-io.ess-library.pods.probe" .livenessProbe | nindent 10 }}
+          httpGet:
+            path: /health
+            port: http
+            scheme: HTTP
+        readinessProbe: {{- include "element-io.ess-library.pods.probe" .readinessProbe | nindent 10 }}
+          httpGet:
+            path: /health
+            port: http
+            scheme: HTTP
+        startupProbe: {{- include "element-io.ess-library.pods.probe" .startupProbe | nindent 10 }}
+          httpGet:
+            path: /health
+            port: http
+            scheme: HTTP
+{{- with .preStopSleepSeconds }}
+        # The Service needs time to update its iptables rules before the pod is killed.
+        lifecycle:
+          preStop:
+            sleep:
+              seconds: {{ . }}
+{{- end }}
+{{- with .resources }}
+        resources:
+          {{- toYaml . | nindent 10 }}
+{{- end }}
+        volumeMounts:
+        - mountPath: /tmp
+          name: tmp
+{{- range .extraVolumeMounts }}
+        - {{ (. | toYaml) | nindent 10 }}
+{{- end }}
+      volumes:
+      - emptyDir: {{- $.Values.elementAdmin.ephemeralStorages.tmp | toYaml | nindent 10 }}
+        name: tmp
+{{- range .extraVolumes }}
+      - {{- (tpl (. | toYaml) $) | nindent 8 }}
+{{- end }}
+{{- end }}
+{{- end }}

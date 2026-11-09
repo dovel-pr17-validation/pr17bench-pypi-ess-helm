@@ -1,0 +1,80 @@
+{{- /*
+Copyright 2025 New Vector Ltd
+Copyright 2025-2026 Element Creations Ltd
+
+SPDX-License-Identifier: AGPL-3.0-only
+*/ -}}
+
+{{ range $step := list "pre" "post" -}}
+{{- with $.Values.deploymentMarkers -}}
+{{- if and .enabled (include "element-io.deployment-markers.markers" (dict "root" $)) }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $.Release.Name }}-deployment-markers-{{ $step }}
+  namespace: {{ $.Release.Namespace }}
+  annotations:
+    "helm.sh/hook": {{ $step }}-install,{{ $step }}-upgrade
+    "helm.sh/hook-weight": "{{ (eq $step "pre") | ternary -10 10 }}"
+{{- with .annotations }}
+    {{- toYaml . | nindent 4 }}
+{{- end }}
+  labels:
+    {{- include "element-io.deployment-markers.labels" (dict "root" $ "context" (mustMergeOverwrite (dict "step" $step) .)) | nindent 4 }}
+spec:
+  backoffLimit: 6
+  completionMode: NonIndexed
+  completions: 1
+  manualSelector: false
+  parallelism: 1
+  podReplacementPolicy: TerminatingOrFailed
+  template:
+    metadata:
+{{- with .annotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+{{- end }}
+      labels:
+        {{- include "element-io.deployment-markers.labels" (dict "root" $ "context" (dict "step" $step "labels" .labels "withChartVersion" false)) | nindent 8 }}
+    spec:
+{{- include "element-io.ess-library.pods.commonSpec" (dict "root" $ "context" (dict "componentValues" . "instanceSuffix" (printf "deployment-markers-%s" $step) "kind" "Job" "usesMatrixTools" true "mountServiceAccountToken" true)) | nindent 6 }}
+{{- with .extraInitContainers }}
+      initContainers:
+      {{- toYaml . | nindent 6 }}
+{{- end }}
+      containers:
+      - name: deployment-markers
+        {{- include "element-io.ess-library.pods.image" (dict "root" $ "context" $.Values.matrixTools.image) | nindent 8 }}
+{{- with .containersSecurityContext }}
+        securityContext:
+          {{- toYaml . | nindent 10 }}
+{{- end }}
+{{- with .resources }}
+        resources:
+          {{- toYaml . | nindent 10 }}
+{{- end }}
+        {{- include "element-io.ess-library.pods.env" (dict "root" $ "context" (dict "componentValues" . "componentName" "deployment-markers")) | nindent 8 }}
+        args:
+        - "deployment-markers"
+        - "-step"
+        - {{ $step | quote }}
+        - "-markers"
+        - {{ include "element-io.deployment-markers.markers" (dict "root" $) | fromYamlArray | join "," | quote }}
+        - "-labels"
+        - {{ include "element-io.deployment-markers.configmap-labels" (dict "root" $ "context" (dict "labels" .labels "withChartVersion" false)) | trim  | replace ": " "="| replace "\n" "," | replace "\"" "" | quote }}
+{{- with .extraVolumeMounts }}
+        volumeMounts:
+{{- range . }}
+        - {{ (. | toYaml) | nindent 10 }}
+{{- end }}
+{{- end }}
+{{- with .extraVolumes }}
+      volumes:
+{{- range . }}
+      - {{- (tpl (. | toYaml) $) | nindent 8 }}
+{{- end }}
+{{- end }}
+---
+{{- end -}}
+{{- end -}}
+{{- end -}}

@@ -1,0 +1,72 @@
+{{- /*
+Copyright 2025 New Vector Ltd
+Copyright 2025-2026 Element Creations Ltd
+
+SPDX-License-Identifier: AGPL-3.0-only
+*/ -}}
+
+{{- $root := .root -}}
+{{- with required "configs/element-web/default.conf.tpl missing context" .context -}}
+
+# Copy of https://github.com/element-hq/element-web/blob/v1.11.97/docker/nginx-templates/default.conf.template but
+# * not as a template, using a hard-coded port
+# * the recommendations from https://github.com/element-hq/element-web/tree/v1.11.97?tab=readme-ov-file#configuration-best-practices added
+# * /health added for k8s
+# * setting a charset
+# * ensuring our security headers include are applied, whether or not paths are in location blocks or not
+server {
+{{- if has $root.Values.networking.ipFamily (list "ipv4" "dual-stack") }}
+  listen       8080;
+{{- end }}
+{{- if has $root.Values.networking.ipFamily (list "ipv6" "dual-stack") }}
+  listen  [::]:8080 ipv6only={{ (eq $root.Values.networking.ipFamily "dual-stack") | ternary "on" "off" }};
+{{- end }}
+  server_name  localhost;
+
+  root   /usr/share/nginx/html;  # noqa
+  index  index.html;
+  charset utf-8;
+
+  include /etc/nginx/security_headers.conf;
+
+  # Set no-cache for the version, config, i18n and index.html
+  # As in https://github.com/element-hq/element-web/tree/develop/apps/web#caching-requirements
+  # so that browsers always check for a new copy of Element Web.
+  # NB http://your-domain/ and http://your-domain/? are also covered by this
+
+  location = /index.html {
+      add_header Cache-Control "no-cache";
+      include /etc/nginx/security_headers.conf;
+  }
+  location = /version {
+      add_header Cache-Control "no-cache";
+      include /etc/nginx/security_headers.conf;
+  }
+  # covers config.json and config.hostname.json requests as it is prefix.
+  location /config {
+      # Serving /app/config.json as per https://github.com/element-hq/element-web/blob/v1.11.97/docker/docker-entrypoint.d/18-load-element-modules.sh#L15
+      root /tmp/element-web-config;
+      add_header Cache-Control "no-cache";
+      include /etc/nginx/security_headers.conf;
+  }
+  location = /i18n/ {
+      add_header Cache-Control "no-cache";
+      include /etc/nginx/security_headers.conf;
+  }
+  location = /usercontent/ {
+      add_header Cache-Control "no-cache";
+      include /etc/nginx/security_headers.conf;
+  }
+  location /modules {
+      alias /modules;
+  }
+  location = /health {
+      allow all;
+      default_type 'application/json';
+      return 200 '{"status": "ok"}';
+  }
+  # redirect server error pages to the static page /50x.html
+  #
+  error_page   500 502 503 504  /50x.html;
+}
+{{- end }}

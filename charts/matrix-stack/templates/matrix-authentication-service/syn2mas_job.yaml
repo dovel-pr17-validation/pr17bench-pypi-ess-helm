@@ -1,0 +1,185 @@
+{{- /*
+Copyright 2025 New Vector Ltd
+Copyright 2025-2026 Element Creations Ltd
+
+SPDX-License-Identifier: AGPL-3.0-only
+*/ -}}
+
+{{- with .Values.matrixAuthenticationService -}}
+{{- if and .enabled .syn2mas.enabled $.Values.synapse.enabled -}}
+{{/* dryRun mode runs as a post-upgrade hook, and can use the existing configmaps and secrets */}}
+{{- $isHook := (not .syn2mas.dryRun) -}}
+{{- $synapseContext := (mustMergeOverwrite ($.Values.synapse | deepCopy)
+                                (dict "templatesVolume" "plain-syn-config"
+                                        "containerName" "render-config-syn"
+                                        "processType" "main"
+                                        "isHook" $isHook
+                                        "extraVolumeMounts" .syn2mas.extraVolumeMounts
+                                        )) -}}
+{{- $masContext := (mustMergeOverwrite ($.Values.matrixAuthenticationService | deepCopy)
+                                (dict "templatesVolume" "plain-mas-config"
+                                "containerName" "render-config-mas"
+                                "isHook" $isHook
+                                "extraVolumeMounts" .syn2mas.extraVolumeMounts
+                                )) -}}
+{{- with (mustMergeOverwrite ($.Values.matrixAuthenticationService.syn2mas | deepCopy) (dict "isHook" $isHook)) -}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+{{- with .annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+{{- end }}
+  labels:
+    {{- include "element-io.syn2mas.labels" (dict "root" $ "context" .) | nindent 4 }}
+    k8s.element.io/matrix-authentication-service-config-hash: {{ include "element-io.matrix-authentication-service.configmap-data" (dict "root" $ "context" $masContext) | sha1sum }}
+    k8s.element.io/matrix-authentication-service-secret-hash: {{ include "element-io.matrix-authentication-service.secret-data" (dict "root" $ "context" $masContext) | sha1sum }}
+    k8s.element.io/synapse-config-hash: {{ include "element-io.synapse.configmap-data"  (dict "root" $ "context" $synapseContext) | sha1sum }}
+    k8s.element.io/synapse-secret-hash: {{ include "element-io.synapse.secret-data"  (dict "root" $ "context" $synapseContext) | sha1sum }}
+    {{ include "element-io.ess-library.postgres-label" (dict "root" $ "context" (dict
+                                                            "essPassword" "matrixAuthenticationService"
+                                                            "postgresProperty" $masContext.postgres
+                                                            )
+                                        ) }}
+    {{ include "element-io.ess-library.postgres-label" (dict "root" $ "context" (dict
+                                                            "essPassword" "synapse"
+                                                            "postgresProperty" $synapseContext.postgres
+                                                            )
+                                        ) }}
+  annotations:
+{{- if .dryRun }}
+    "helm.sh/hook": post-install,post-upgrade
+{{- else }}
+    "helm.sh/hook": pre-install,pre-upgrade
+{{- end }}
+    "helm.sh/hook-weight": "0"
+  name: {{ $.Release.Name }}-syn2mas
+  namespace: {{ $.Release.Namespace }}
+spec:
+  backoffLimit: 0
+  completionMode: NonIndexed
+  completions: 1
+  manualSelector: false
+  parallelism: 1
+  podReplacementPolicy: TerminatingOrFailed
+  template:
+    metadata:
+{{- with .annotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+{{- end }}
+      labels:
+        {{- include "element-io.syn2mas.labels" (dict "root" $ "context" (dict "image" .image "labels" .labels "withChartVersion" false)) | nindent 8 }}
+        k8s.element.io/matrix-authentication-service-config-hash: {{ include "element-io.matrix-authentication-service.configmap-data" (dict "root" $ "context" $masContext) | sha1sum }}
+        k8s.element.io/matrix-authentication-service-secret-hash: {{ include "element-io.matrix-authentication-service.secret-data" (dict "root" $ "context" $masContext) | sha1sum }}
+        k8s.element.io/synapse-config-hash: {{ include "element-io.synapse.configmap-data"  (dict "root" $ "context" $synapseContext) | sha1sum }}
+        k8s.element.io/synapse-secret-hash: {{ include "element-io.synapse.secret-data"  (dict "root" $ "context" $synapseContext) | sha1sum }}
+        {{ include "element-io.ess-library.postgres-label" (dict "root" $ "context" (dict
+                                                                "essPassword" "matrixAuthenticationService"
+                                                                "postgresProperty" $masContext.postgres
+                                                                )
+                                                ) }}
+        {{ include "element-io.ess-library.postgres-label" (dict "root" $ "context" (dict
+                                                                "essPassword" "synapse"
+                                                                "postgresProperty" $synapseContext.postgres
+                                                                )
+                                                ) }}
+    spec:
+{{- include "element-io.ess-library.pods.commonSpec" (dict "root" $ "context" (dict "componentValues" . "instanceSuffix" "syn2mas" "kind" "Job" "usesMatrixTools" true "mountServiceAccountToken" true)) | nindent 6 }}
+      initContainers:
+      - name: copy-mas-cli
+        {{- include "element-io.ess-library.pods.image" (dict "root" $ "context" .image) | nindent 8 }}
+        command:
+        - sh
+        - -c
+        - cp -v /usr/local/bin/mas-cli /tmp-mas-cli/mas-cli
+{{- with .containersSecurityContext }}
+        securityContext:
+          {{- toYaml . | nindent 10 }}
+{{- end }}
+{{- with .resources }}
+        resources:
+          {{- toYaml . | nindent 10 }}
+{{- end }}
+        volumeMounts:
+{{- range .extraVolumeMounts }}
+        - {{ (. | toYaml) | nindent 10 }}
+{{- end }}
+        - mountPath: /tmp-mas-cli
+          name: tmp-mas-cli
+      {{- include "element-io.matrix-authentication-service.render-config-container" (dict "root" $ "context" $masContext) | nindent 6 }}
+      {{- include "element-io.synapse.render-config-container" (dict "root" $ "context" $synapseContext) | nindent 6 }}
+      {{- include "element-io.ess-library.pods.postgresTcpWait" (dict "root" $ "context" (dict
+            "suffixName" "-mas"
+            "postgres" $masContext.postgres
+            "containersSecurityContext" .containersSecurityContext
+            "extraVolumeMounts" .extraVolumeMounts)) | nindent 6 }}
+      {{- include "element-io.ess-library.pods.postgresTcpWait" (dict "root" $ "context" (dict
+            "suffixName" "-syn"
+            "postgres" $synapseContext.postgres
+            "containersSecurityContext" .containersSecurityContext
+            "extraVolumeMounts" .extraVolumeMounts)) | nindent 6 }}
+{{- with .extraInitContainers }}
+      {{- toYaml . | nindent 6 }}
+{{- end }}
+      containers:
+      - name: syn2mas-migrate
+{{- if .dryRun }}
+        args: ["syn2mas", "--config", "/conf/mas-config.yaml", "--synapse-config", "/conf/homeserver.yaml", "--dry-run"]
+{{- else }}
+        args: ["syn2mas", "--config", "/conf/mas-config.yaml", "--synapse-config", "/conf/homeserver.yaml"]
+{{- end }}
+        {{- include "element-io.ess-library.pods.image" (dict "root" $ "context" $.Values.matrixTools.image) | nindent 8 }}
+{{- with .containersSecurityContext }}
+        securityContext:
+          {{- toYaml . | nindent 10 }}
+{{- end }}
+        {{- include "element-io.ess-library.pods.env" (dict "root" $ "context" (dict "componentValues" . "componentName" "syn2mas")) | nindent 8 }}
+{{- with .resources }}
+        resources:
+          {{- toYaml . | nindent 10 }}
+{{- end }}
+        volumeMounts:
+        - mountPath: "/conf"
+          name: rendered-config
+          readOnly: true
+        - mountPath: "/tmp-mas-cli"
+          name: tmp-mas-cli
+          readOnly: true
+{{- range $secret := include "element-io.syn2mas.configSecrets" (dict "root" $ "context" (dict "synapseContext" $synapseContext "masContext" $masContext)) | fromJsonArray }}
+{{- with (tpl $secret $) }}
+        - mountPath: /secrets/{{ . }}
+          name: "secret-{{ . | sha256sum | trunc 12 }}"
+          readOnly: true
+{{- end }}
+{{- end }}
+{{- range .extraVolumeMounts }}
+        - {{ (. | toYaml) | nindent 10 }}
+{{- end }}
+      volumes:
+      - name: plain-syn-config
+        configMap:
+          defaultMode: 288
+          name: {{ include "element-io.synapse.configmap-name" (dict "root" $ "context" (dict "isHook" $isHook)) }}
+      - name: plain-mas-config
+        configMap:
+          defaultMode: 288
+          name: {{ include "element-io.matrix-authentication-service.configmap-name" (dict "root" $ "context" (dict "isHook" $isHook)) }}
+{{- range $_, $secret := include "element-io.syn2mas.configSecrets" (dict "root" $ "context" (dict "synapseContext" $synapseContext "masContext" $masContext)) | fromJsonArray }}
+{{- with tpl $secret $ }}
+      - secret:
+          defaultMode: 288
+          secretName: {{ . }}
+        name: "secret-{{ . | sha256sum | trunc 12 }}"
+{{- end }}
+{{- end }}
+{{- range .extraVolumes }}
+      - {{- (tpl (. | toYaml) $) | nindent 8 }}
+{{- end }}
+      - emptyDir: {{- $.Values.matrixTools.ephemeralStorages.renderedConfig | toYaml | nindent 10 }}
+        name: rendered-config
+      - emptyDir: {{- $.Values.matrixAuthenticationService.syn2mas.ephemeralStorages.tmpMasCli | toYaml | nindent 10 }}
+        name: tmp-mas-cli
+{{- end }}
+{{- end }}
+{{- end }}

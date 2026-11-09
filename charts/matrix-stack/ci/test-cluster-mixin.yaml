@@ -1,0 +1,36 @@
+# Copyright 2024-2025 New Vector Ltd
+# Copyright 2025-2026 Element Creations Ltd
+#
+# SPDX-License-Identifier: AGPL-3.0-only
+
+# This value file is not complete on its own.
+# It is a mixin to be used with other values file to enable
+# usage of the test cluster
+
+certManager:
+  clusterIssuer: ess-selfsigned
+
+hookshot:
+  additional:
+    allow_local_ips.yaml:
+      config: |
+        widgets:
+          allowedIpRanges:
+          - 10.0.0.0/8
+          openIdOverrides:
+            {{ $.Values.serverName | quote }}: "http://{{- $.Release.Name }}-synapse.{{ $.Release.Namespace }}.svc.{{ $.Values.clusterDomain }}:8008"
+  # Hookshot doesn't need extraEnv to disable TLS validation as `widgets.openIdOverrides` sets Synapse's endpoint to HTTP
+  # Hookshot doesn't need hostAliases for Synapse and Well-Known as `widgets.openIdOverrides` skips this
+
+matrixRTC:
+  # Because the authoriser service won't trust certificates issued by the above self-signed CA
+  extraEnv:
+  - name: LIVEKIT_INSECURE_SKIP_VERIFY_TLS
+    value: YES_I_KNOW_WHAT_I_AM_DOING
+  # Because the authoriser service does well-known, Matrix userinfo and self API calls via the frontdoor
+  hostAliases:
+  - hostnames:
+    - ess.localhost
+    - mrtc.ess.localhost
+    - synapse.ess.localhost
+    ip: '{{ ( (lookup "v1" "Service" "kube-system" "traefik") | default (dict "spec" (dict "clusterIP" "127.0.0.1")) ).spec.clusterIP }}'

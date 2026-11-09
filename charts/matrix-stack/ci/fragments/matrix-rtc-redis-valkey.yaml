@@ -1,0 +1,14 @@
+# Copyright 2026 Element Creations Ltd
+#
+# SPDX-License-Identifier: AGPL-3.0-only
+
+matrixRTC:
+  redisOrValkey:
+    host: "external-redis-or-valkey.example.com"
+    port: 6379
+    db: 2
+  sfu:
+    redisOrValkey:
+      host: "external-redis-or-valkey.example.com"
+      port: 6379
+      db: 3

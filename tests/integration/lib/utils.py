@@ -1,0 +1,450 @@
+# Copyright 2024-2025 New Vector Ltd
+# Copyright 2025-2026 Element Creations Ltd
+#
+# SPDX-License-Identifier: AGPL-3.0-only
+
+import asyncio
+import base64
+import hashlib
+import json
+import os
+import random
+import shutil
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from pathlib import Path
+from ssl import SSLContext
+from typing import Any
+from urllib.parse import urlparse
+
+import aiohttp
+import pyhelm3
+import yaml
+from aiohttp_retry import JitterRetry, RetryClient
+from lightkube import AsyncClient
+from lightkube.generic_resource import (
+    async_load_in_cluster_generic_resources,
+    get_generic_resource,
+)
+from lightkube.resources.apiextensions_v1 import CustomResourceDefinition
+from lightkube.resources.apps_v1 import Deployment, StatefulSet
+from lightkube.resources.core_v1 import Pod
+
+retry_options = JitterRetry(
+    attempts=12,
+    statuses=set(int(code) for code in os.environ.get("PYTEST_EXPECTED_HTTP_STATUS_CODES", "").split(",") if code),
+    retry_all_server_errors=False,
+)
+
+
+@dataclass
+class DockerAuth:
+    registry: str
+    username: str
+    password: str
+
+
+def docker_config_json(auths: list[DockerAuth]) -> str:
+    docker_config_auths = {}
+    for auth in auths:
+        docker_config_auths[auth.registry] = {
+            "username": auth.username,
+            "password": auth.password,
+            "auth": b64encode(f"{auth.username}:{auth.password}"),
+        }
+
+    return json.dumps({"auths": docker_config_auths})
+
+
+def b64encode(value: str):
+    return base64.b64encode(value.encode("utf-8")).decode("utf-8")
+
+
+@asynccontextmanager
+async def aiohttp_client(ssl_context: SSLContext) -> AsyncGenerator[RetryClient]:
+    async with (
+        aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as session,
+        RetryClient(session, retry_options=retry_options, raise_for_status=True) as client,
+    ):
+        yield client
+
+
+async def aiohttp_get_json(url: str, headers: dict, ssl_context: SSLContext) -> Any:
+    """Do an async HTTP GET against a url, retry exponentially on 429s. It expects a JSON response.
+
+    Args:
+        url (str): The URL to hit
+        headers (dict): Any headers to add
+        ssl_context (SSLContext): The SSL Context with test CA loaded
+
+    Returns:
+        Any: the Json dict response
+    """
+    host = urlparse(url).hostname
+    if not host:
+        raise ValueError(f"{url} does not have a hostname")
+
+    async with (
+        aiohttp_client(ssl_context) as client,
+        client.get(
+            url.replace(host, "127.0.0.1"),
+            headers=headers | {"Host": host},
+            server_hostname=host,
+        ) as response,
+    ):
+        return await response.json()
+
+
+async def aiohttp_post_json(url: str, data: dict, headers: dict, ssl_context: SSLContext) -> Any:
+    """Do an async HTTP POST against a url, retry exponentially on 429s. IT expects a JSON resposne.
+
+    Due to synapse bootstrap, when helm has finished deploying, HAProxy can still return
+    429s because it did not detect the backend servers ready yet.
+
+    Args:
+        url (str): The URL to hit
+        data (dict): The data to post
+        headers (dict): Headers to use
+        ssl_context (SSLContext): The SSL Context with test CA loaded
+
+    Returns:
+        Any: the Json dict response
+    """
+    host = urlparse(url).hostname
+    if not host:
+        raise ValueError("f{url} does not have a hostname")
+
+    async with (
+        aiohttp_client(ssl_context) as client,
+        client.post(
+            url.replace(host, "127.0.0.1"), headers=headers | {"Host": host}, server_hostname=host, json=data
+        ) as response,
+    ):
+        # If we can 204: NO CONTENT, we dont want to try to parse json
+        if response.status != 204:
+            return await response.json()
+        else:
+            return {}
+
+
+async def aiohttp_put_json(url: str, data: dict, headers: dict, ssl_context: SSLContext) -> Any:
+    """Do an async HTTP PUT against a url, retry exponentially on 429s. IT expects a JSON resposne.
+
+    Due to synapse bootstrap, when helm has finished deploying, HAProxy can still return
+    429s because it did not detect the backend servers ready yet.
+
+    Args:
+        url (str): The URL to hit
+        data (dict): The data to post
+        headers (dict): Headers to use
+        ssl_context (SSLContext): The SSL Context with test CA loaded
+
+    Returns:
+        Any: the Json dict response
+    """
+    host = urlparse(url).hostname
+    if not host:
+        raise ValueError("f{url} does not have a hostname")
+
+    async with (
+        aiohttp_client(ssl_context) as client,
+        client.put(
+            url.replace(host, "127.0.0.1"), headers=headers | {"Host": host}, server_hostname=host, json=data
+        ) as response,
+    ):
+        # If we can 204: NO CONTENT, we dont want to try to parse json
+        if response.status != 204:
+            return await response.json()
+        else:
+            return {}
+
+
+def merge(a: dict, b: dict, path=None):
+    if not path:
+        path = []
+    for key in b:
+        if key in a:
+            if isinstance(a[key], dict) and isinstance(b[key], dict):
+                merge(a[key], b[key], path + [str(key)])
+            elif type(a[key]) is not type(b[key]):
+                raise Exception("Conflict at " + ".".join(path + [str(key)]))
+            else:
+                a[key] = b[key]
+        else:
+            a[key] = b[key]
+    return a
+
+
+def value_file_has(property_path, expected=None):
+    """
+    Check if a nested property (given as a dot-separated string) is would be true if the chart was installed/templated.
+    """
+    # If we do not have TEST_VALUES_FILE defined, we return False by default
+    if not os.environ.get("TEST_VALUES_FILE"):
+        return False
+
+    with (
+        open(Path().resolve() / "charts" / "matrix-stack" / "values.yaml") as base_value_file,
+        open(os.environ["TEST_VALUES_FILE"]) as test_value_file,
+    ):
+        data = merge(yaml.safe_load(base_value_file), yaml.safe_load(test_value_file))
+
+    if os.environ.get("ADDITIONAL_TEST_VALUES_FILE"):
+        with open(os.environ["ADDITIONAL_TEST_VALUES_FILE"]) as additional_test_value_file:
+            data = merge(data, yaml.safe_load(additional_test_value_file))
+
+    keys = property_path.split(".")
+    for key in keys:
+        if isinstance(data, dict) and key in data:
+            data = data[key]
+        else:
+            return False
+    return data == expected if expected is not None else True
+
+
+async def read_service_monitor_kind(kube_client):
+    async for r in kube_client.list(CustomResourceDefinition):
+        if r.spec.group == "monitoring.coreos.com" and r.spec.names.kind == "ServiceMonitor":
+            generic_resource = get_generic_resource(f"{r.spec.group}/{r.spec.versions[0].name}", r.spec.names.kind)
+            if generic_resource is None:
+                await async_load_in_cluster_generic_resources(kube_client)
+                generic_resource = get_generic_resource(f"{r.spec.group}/{r.spec.versions[0].name}", r.spec.names.kind)
+            return generic_resource
+    raise Exception("Could not find ServiceMonitor CRD")
+
+
+async def get_pods_matching_labels(kube_client: AsyncClient, namespace: str, labels: dict):
+    active_pods = set[str]()
+    async for event, pod in kube_client.watch(Pod, namespace=namespace, labels=labels):
+        assert pod
+        assert pod.metadata
+        assert pod.metadata.name
+        assert pod.status
+        assert pod.status.phase
+        pod_name = pod.metadata.name
+        if event in ["ADDED", "MODIFIED"] and pod_name not in active_pods and pod.status.phase == "Running":
+            active_pods.add(pod_name)
+            yield pod_name
+
+        if event in ["MODIFIED", "DELETED"] and pod_name in active_pods and pod.status.phase != "Running":
+            active_pods.remove(pod_name)
+
+
+async def stream_logs_from_pod(kube_client: AsyncClient, namespace: str, pod_name: str, log_queue: asyncio.Queue):
+    async for line in kube_client.log(pod_name, namespace=namespace, follow=True, newlines=False):
+        log_queue.put_nowait(line)
+
+
+async def stream_logs_from_pods_matching_labels(
+    kube_client: AsyncClient, namespace: str, labels: dict[str, str], log_queue: asyncio.Queue
+):
+    async with asyncio.TaskGroup() as task_group:
+        async for pod_name in get_pods_matching_labels(kube_client, namespace, labels):
+            task_group.create_task(stream_logs_from_pod(kube_client, namespace, pod_name, log_queue))
+
+
+async def forward_matching_logs(input_logs_queue: asyncio.Queue, output_matchers_to_logs_queues: list):
+    while True:
+        log_line = await input_logs_queue.get()
+        for matcher, output_logs_queue in output_matchers_to_logs_queues:
+            if matcher(log_line):
+                output_logs_queue.put_nowait(log_line)
+
+
+async def chart_from_ci_cache(helm_client: pyhelm3.Client, chart_ref: str) -> pyhelm3.Chart:
+    if os.environ.get("GITHUB_WORKSPACE"):
+        helm_cache = Path(os.environ["GITHUB_WORKSPACE"]) / ".pyhelm_cache"
+        helm_cache.mkdir(parents=True, exist_ok=True)
+        chart_name = chart_ref.split("/")[-1]
+        cached_ref = helm_cache / chart_name
+        try:
+            # Always try to fetch the remote chart first
+            async with helm_client.pull_chart(chart_ref) as chart:
+                if cached_ref.exists():
+                    shutil.rmtree(cached_ref)
+                # pull_chart returns a Chart object, not a Path, type annotation is wrong
+                shutil.copytree(chart.ref, cached_ref)  # type: ignore
+                # pull_chart removes the pulled chart, we return the cached one
+                return await helm_client.get_chart(cached_ref)  # type: ignore
+        except Exception as e:
+            # Fall back to cache if remote fetch fails
+            if cached_ref.exists():
+                return await helm_client.get_chart(cached_ref)
+            else:
+                raise FileNotFoundError(
+                    f"Could not find chart {chart_ref} in cache at {cached_ref}. "
+                    f"The cache {helm_cache} contains : {helm_cache.glob('*')}"
+                    f"Remote fetch also failed with error: {e}"
+                ) from e
+    else:
+        return await helm_client.get_chart(chart_ref)
+
+
+async def install_release_and_wait_for_resources(
+    helm_client: pyhelm3.Client,
+    kube_client: AsyncClient,
+    release_name: str,
+    chart: pyhelm3.Chart,
+    values: dict,
+    namespace: str,
+    create_namespace: bool,
+):
+    """Install or upgrade a Helm release without --wait, then poll its resources until ready.
+
+    We don't use helm's --wait: in flaky runs helm 4's status watcher never
+    sees the resources as ready, even though they are, and hangs until the timeout.
+    See https://github.com/helm/helm/issues/32615
+    We also don't use --atomic/--rollback-on-failure as it implies --wait.
+
+    The Deployments, StatefulSets and CustomResourceDefinitions of the release
+    are read from its manifest, and their readiness is polled instead.
+    Note that CRDs placed in the chart's `crds/` folder are not part of the
+    release manifest, so they are not waited on.
+    """
+    revision = await helm_client.install_or_upgrade_release(
+        release_name,
+        chart,
+        values,
+        namespace=namespace,
+        create_namespace=create_namespace,
+    )
+
+    # The manifest does not always carry the namespace. Helm then installs
+    # the resource in the release namespace.
+    deployments = []
+    statefulsets = []
+    crd_names = []
+    for resource in await revision.resources():
+        # The manifest can hold empty documents between its --- separators.
+        # They are parsed as None, skip them.
+        if not resource:
+            continue
+        kind = resource.get("kind")
+        metadata = resource.get("metadata") or {}
+        name = metadata.get("name")
+        if not name:
+            continue
+        if kind == "Deployment":
+            deployments.append((name, metadata.get("namespace") or namespace))
+        elif kind == "StatefulSet":
+            statefulsets.append((name, metadata.get("namespace") or namespace))
+        elif kind == "CustomResourceDefinition":
+            crd_names.append(name)
+
+    async def _deployments_are_ready():
+        for deployment_name, deployment_namespace in deployments:
+            deployment = await kube_client.get(Deployment, name=deployment_name, namespace=deployment_namespace)
+            conditions = deployment.status.conditions if deployment.status else []
+            if not any(condition.type == "Available" and condition.status == "True" for condition in conditions):
+                await asyncio.sleep(random.uniform(0, 1))
+                raise AssertionError(f"Deployment {deployment_name} not ready, conditions: {conditions}")
+
+    async def _statefulsets_are_ready():
+        for statefulset_name, statefulset_namespace in statefulsets:
+            statefulset = await kube_client.get(StatefulSet, name=statefulset_name, namespace=statefulset_namespace)
+            replicas = statefulset.spec.replicas if statefulset.spec else 0
+            ready_replicas = statefulset.status.readyReplicas if statefulset.status else 0
+            # StatefulSets only expose conditions on newer Kubernetes versions,
+            # so compare the ready replicas against the desired ones instead
+            if ready_replicas != replicas:
+                await asyncio.sleep(random.uniform(0, 1))
+                raise AssertionError(
+                    f"StatefulSet {statefulset_name} not ready, readyReplicas: {ready_replicas}/{replicas}"
+                )
+
+    async def _crds_are_established():
+        for crd_name in crd_names:
+            crd = await kube_client.get(CustomResourceDefinition, name=crd_name)
+            conditions = crd.status.conditions if crd.status else []
+            if not any(condition.type == "Established" and condition.status == "True" for condition in conditions):
+                await asyncio.sleep(random.uniform(0, 1))
+                raise AssertionError(f"{crd_name} CRD not established, conditions: {conditions}")
+
+    # The three checks run concurrently on each attempt. return_exceptions=True
+    # lets them all run to completion, so that the reported failure isn't
+    # whichever kind happened to fail first
+    async def _resources_are_ready():
+        results = await asyncio.gather(
+            _deployments_are_ready(),
+            _statefulsets_are_ready(),
+            _crds_are_established(),
+            return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+
+    # Pulling images on a cold runner can take a while, and building the API
+    # handlers for a batch of CRDs is CPU intensive for the kube-apiserver,
+    # so we allow up to 5 minutes for all of the release's resources.
+    await async_retry_with_timeout(
+        _resources_are_ready,
+        max_retries=150,
+        delay=2,
+        timeout_seconds=300,
+    )
+
+
+async def async_iterable_payload(value: AsyncIterator[bytes], file_size: int) -> aiohttp.payload.AsyncIterablePayload:
+    # Workaround to the fact that aiohttp hardcodes sending a chuncked upload
+    # when it receives an async iterator
+    # See https://github.com/fsspec/filesystem_spec/issues/1390#issuecomment-1765886388
+    payload = aiohttp.payload.AsyncIterablePayload(value)
+    payload._size = file_size
+    return payload
+
+
+async def random_bytes(
+    size_in_bytes: int,
+    sha256_hash: hashlib._Hash,
+    chunk_size: int = 4096,
+) -> AsyncIterator[bytes]:
+    remaining = size_in_bytes
+    while remaining > 0:
+        chunk = os.urandom(min(chunk_size, remaining))
+        sha256_hash.update(chunk)
+        yield chunk
+        remaining -= len(chunk)
+
+
+async def async_retry_with_timeout(
+    retriable_callable: Callable[[], Awaitable[Any]],
+    max_retries=15,
+    timeout_seconds=60,
+    delay=1,
+    should_retry: Callable[[BaseException], bool] | None = None,
+):
+    begin_time = datetime.now()
+    last_exception = None
+    attempts_ts: list[datetime] = []
+
+    for attempt in range(max_retries):
+        # Check if timeout has been exceeded
+        if datetime.now() > begin_time + timedelta(seconds=timeout_seconds):
+            raise TimeoutError(
+                f"Timeout of {timeout_seconds} seconds exceeded. "
+                f"Last exception: {last_exception if last_exception else 'None'}"
+                f"Tried attempts: {[a.strftime('%H:%M:%S') for a in attempts_ts]}"
+            )
+
+        try:
+            attempts_ts.append(datetime.now())
+            return await retriable_callable()
+        except BaseException as e:
+            last_exception = e
+            # If no should_retry function is provided, retry on all exceptions
+            if should_retry is None or should_retry(e):
+                print(f"Attempt {attempt}/{max_retries} failed: {e}")
+                if attempt < max_retries:
+                    await asyncio.sleep(delay)
+                    continue  # Explicitly continue to the next attempt
+            raise  # Re-raise if should_retry returns False
+
+    if last_exception:
+        raise RuntimeError(
+            f"All {max_retries} attempts failed"
+            f"Last exception: {last_exception if last_exception else 'None'}"
+            f"Tried attempts: {[a.strftime('%H:%M:%S') for a in attempts_ts]}"
+        )  # Re-raise the last exception if all retries fail

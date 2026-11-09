@@ -1,0 +1,35 @@
+{
+  "type": "object",
+  "properties": {
+    "annotations": {
+      "type": "object",
+      "additionalProperties": {
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "host": {
+      "type": "string"
+    },
+    "className": {
+      "type": "string"
+    },
+    "tlsEnabled": {
+      "type": "boolean"
+    },
+    "tlsSecret": {
+      "type": "string"
+    },
+    "controllerType": {
+      "type": "string",
+      "enum": [
+        "ingress-nginx"
+      ]
+    },
+    "service": {
+      "$ref": "file://common/service.json"
+    }
+  }
+}

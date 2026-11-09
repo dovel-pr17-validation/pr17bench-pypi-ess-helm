@@ -1,0 +1,81 @@
+# Copyright 2025 New Vector Ltd
+# Copyright 2025-2026 Element Creations Ltd
+#
+# SPDX-License-Identifier: AGPL-3.0-only
+
+name: dyff of rendered templates
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  generate-dyff:
+    runs-on: ubuntu-latest
+    steps:
+    # This checks out the merge of the PR branch and the base branch.
+    # If you check this to be just the PR branch then the ref for the subsequent checkout
+    # needs to be changed too or you end up with unexpected changes being shown.
+    - name: Checkout PR
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      with:
+        persist-credentials: false
+        fetch-depth: 0
+
+    - uses: $/.github/actions/asdf-cache
+      with:
+        tool-versions: |
+          # renovate: datasource=github-releases depName=dyff packageName=homeport/dyff
+          dyff 1.12.0
+
+    # helm template doesn't reliably order manifests within the same kind, so use yq to do it for us
+    - name: Render the CI manifests of the PR
+      run: scripts/render_ci_manifests.sh charts/matrix-stack "$RUNNER_TEMP/new"
+
+    # https://github.com/orgs/community/discussions/59677 says that github.event.pull_request.base.sha
+    # is only calculated on creation of the PR, so we reference the target branch by ref.
+    # The base branch is checked out in a worktree so that the workspace keeps the PR
+    # checkout: the local actions are only on the PR branch.
+    - name: Checkout the base branch
+      env:
+        BASE_REF: ${{ github.event.pull_request.base.ref }}
+      run: git worktree add "$RUNNER_TEMP/base-tree" "$BASE_REF"
+
+    - name: Render the CI manifests of the base
+      run: scripts/render_ci_manifests.sh "$RUNNER_TEMP/base-tree/charts/matrix-stack" "$RUNNER_TEMP/old"
+
+    - name: Upload new manifests
+      id: upload-new
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+      with:
+        name: new-manifests
+        path: ${{ runner.temp }}/new
+        retention-days: 1
+
+    - name: dyff old and new manifests
+      id: dyff
+      shell: bash
+      env:
+        ARTIFACT_URL: ${{ steps.upload-new.outputs.artifact-url }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+      run: |
+        echo "output_dir=$RUNNER_TEMP" | tee -a "$GITHUB_OUTPUT"
+        header="# dyff of changes in rendered templates of CI manifests\n\n"
+        comment_body=$(scripts/dyff_all_ci_values_files_manifests.sh comment "$RUNNER_TEMP/old" "$RUNNER_TEMP/new")
+        if [ -z "$comment_body" ]; then
+          comment_body="No changes in rendered templates"
+        else
+          header+="Full contents of manifests and dyffs are available in ${ARTIFACT_URL}\n\n"
+        fi
+
+
+        echo -e "$header$comment_body" | tee "$RUNNER_TEMP/dyff-output.md"
+        echo "$PR_NUMBER" | tee "$RUNNER_TEMP/pr-number.txt"
+
+    - name: Upload generated manifests
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+      with:
+        name: dyff-templates
+        path: ${{ steps.dyff.outputs.output_dir }}
+        retention-days: 1

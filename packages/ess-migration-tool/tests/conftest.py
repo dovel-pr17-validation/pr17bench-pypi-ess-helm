@@ -1,0 +1,570 @@
+# Copyright 2026 Element Creations Ltd
+#
+# SPDX-License-Identifier: AGPL-3.0-only
+
+
+"""
+Pytest fixtures for migration tests.
+Centralizes common test configurations to reduce duplication.
+"""
+
+import json
+import logging
+
+import pytest
+import yaml
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import dsa, ec, rsa
+from ess_migration_tool.migration import ConfigValueTransformer
+from ess_migration_tool.models import GlobalOptions, ValueSourceTracking
+from frozendict import frozendict
+from yaml import SafeDumper, representer
+
+from .helm_validation import validate_helm_template
+
+# Add representer for frozendict to allow YAML serialization
+SafeDumper.add_representer(frozendict, representer.SafeRepresenter.represent_dict)
+
+
+@pytest.fixture
+def config_value_transformer():
+    """Fixture providing a generator of ConfigValueTransformer instances for a given name."""
+
+    def _gen(name: str):
+        return ConfigValueTransformer(
+            logging.getLogger(name),
+            ess_config={},
+            value_source_tracking=ValueSourceTracking(),
+            global_options=GlobalOptions(),
+        )
+
+    return _gen
+
+
+@pytest.fixture
+def write_config(tmp_path):
+    """Generic fixture to write config files.
+
+    Supports YAML and JSON formats.
+    """
+
+    def _write(config_data, filename, format="yaml"):
+        config_file = tmp_path / filename
+        with open(config_file, "w") as f:
+            if format == "yaml":
+                yaml.dump(config_data, f, Dumper=SafeDumper)
+            elif format == "json":
+                json.dump(config_data, f, indent=2)
+            else:
+                raise ValueError(f"Unsupported format: {format}")
+        return config_file
+
+    return _write
+
+
+@pytest.fixture
+def basic_synapse_config():
+    """Basic Synapse configuration for testing."""
+    return frozendict(
+        {
+            "server_name": "test.example.com",
+            "public_baseurl": "https://matrix.example.com",
+            "listeners": [
+                {
+                    "port": 8008,
+                    "tls": False,
+                    "type": "http",
+                    "x_forwarded": False,
+                    "resources": [
+                        {
+                            "names": ["client", "federation"],
+                            "compression": False,
+                        }
+                    ],
+                }
+            ],
+            "max_upload_size": "60M",
+            "database": {
+                "args": {
+                    "database": "synapse",
+                    "user": "synapse",
+                    "host": "postgres",
+                    "port": 5432,
+                    "password": "test",
+                    "keepalives": 1,
+                    "keepalives_idle": 10,
+                    "keepalives_interval": 10,
+                    "keepalives_count": 3,
+                    "cp_min": 5,
+                    "cp_max": 10,
+                }
+            },
+            "report_stats": False,
+            "require_auth_for_profile_requests": True,
+            "federation_client_minimum_tls_version": "1.2",
+            "experimental_features": {
+                "msc4028_push_encrypted_events": True,
+            },
+            "url_preview_enabled": True,
+            "url_preview_ip_range_whitelist": [],
+            "url_preview_ip_range_blacklist": ["192.168.0.0/16", "10.0.0.0/8"],
+            "rc_message": {"per_second": 0.5, "burst_count": 30},
+            "rc_delayed_event_mgmt": {"per_second": 1, "burst_count": 20},
+            "macaroon_secret_key": "test_macaroon_secret",
+            "registration_shared_secret": "test_registration_secret",
+        }
+    )
+
+
+@pytest.fixture
+def basic_element_web_config():
+    """Basic Element Web configuration for testing."""
+    return frozendict(
+        {
+            "default_server_config": {
+                "m.homeserver": {
+                    "base_url": "https://matrix.example.com/",
+                    "server_name": "test.example.com",
+                }
+            },
+            "setting_defaults": {"customTheme": True},
+        }
+    )
+
+
+@pytest.fixture
+def synapse_config_with_custom_listeners(basic_synapse_config):
+    """Synapse configuration with custom listeners for testing."""
+    return frozendict(basic_synapse_config) | {
+        "listeners": [
+            {
+                "port": 9010,
+                "tls": True,
+                "type": "http",
+                "resources": [{"names": ["custom_api"], "compress": False}],
+            }
+        ]
+    }
+
+
+@pytest.fixture
+def synapse_config_without_public_baseurl(basic_synapse_config):
+    """Synapse configuration without public_baseurl for testing prompt functionality."""
+    # Remove public_baseurl to test prompt functionality
+    return frozendict({k: v for k, v in basic_synapse_config.items() if k != "public_baseurl"})
+
+
+@pytest.fixture
+def synapse_config_with_signing_key(tmp_path, basic_synapse_config):
+    """Synapse configuration with a signing key file."""
+    # Create signing key file
+    signing_key_file = tmp_path / "signing.key"
+    signing_key_file.write_text("test_signing_key_content")
+
+    # Add signing key to config
+    return frozendict(basic_synapse_config) | {"signing_key_path": str(signing_key_file)}
+
+
+@pytest.fixture
+def synapse_config_with_web_client_location(basic_synapse_config):
+    """Synapse configuration with web_client_location for Element Web."""
+    return frozendict(basic_synapse_config) | {"web_client_location": "https://element.example.com/"}
+
+
+@pytest.fixture
+def synapse_config_with_instance_map(tmp_path, basic_synapse_config):
+    """Synapse configuration with instance map."""
+    return frozendict(basic_synapse_config) | {
+        "instance_map": {
+            "main": {"host": "main-instance.local", "port": 9093},
+            "funny-name": {"host": "funny-instance.local", "port": 9093},
+            "synchrotron": {"host": "synchro.local", "port": 9093},
+            "synchrotron2": {"host": "synchro.local", "port": 9094},
+        }
+    }
+
+
+@pytest.fixture
+def synapse_config_with_email_templates(tmp_path, basic_synapse_config):
+    """Synapse configuration with email templates directory."""
+    # Create email templates directory
+    templates_dir = tmp_path / "email_templates"
+    templates_dir.mkdir()
+    # Add password reset, registration templates
+    (templates_dir / "password_reset.html").write_text("test_password_reset_content")
+    (templates_dir / "registration.html").write_text("test_registration_content")
+
+    # Add email templates to config
+    return frozendict(basic_synapse_config) | {"templates": {"custom_template_directory": str(templates_dir)}}
+
+
+@pytest.fixture
+def synapse_config_with_ca_federation_list(tmp_path, basic_synapse_config):
+    """Synapse configuration with CA federation list."""
+    # Create CA directory
+    ca_dir = tmp_path / "ca"
+    ca_dir.mkdir()
+    # Add CA files
+    (ca_dir / "ca1.pem").write_text("CA1")
+    (ca_dir / "ca-second.pem").write_text("CA2")
+    (ca_dir / "another-ca.pem").write_text("CA3")
+
+    # Add CA list to config
+    return frozendict(basic_synapse_config) | {
+        "federation_custom_ca_list": [
+            str(ca_dir / "ca1.pem"),
+            str(ca_dir / "ca-second.pem"),
+            str(ca_dir / "another-ca.pem"),
+        ]
+    }
+
+
+@pytest.fixture
+def synapse_config_with_mas(tmp_path, basic_synapse_config):
+    """Synapse configuration with MAS."""
+    return frozendict(basic_synapse_config) | {
+        "matrix_authentication_service": {
+            "enabled": True,
+            "endpoint": "http://mas.example.com:8080",
+            "secret": "synapse_shared_secret_abcdef",
+        }
+    }
+
+
+@pytest.fixture
+def basic_mas_config():
+    """Basic MAS configuration for testing."""
+    return frozendict(
+        {
+            "http": {"public_base": "https://auth.example.com", "bind": {"address": "0.0.0.0", "port": 8080}},
+            "database": {"uri": "postgresql://mas:mas_password@postgres:5432/mas?sslmode=prefer"},
+            "secrets": {"encryption": "my_encryption_key"},
+            "matrix": {
+                "homeserver": "test.example.com",
+                "secret": "synapse_shared_secret_wrong",
+                "endpoint": "http://synapse:8008",
+            },
+            "policy": {
+                "data": {
+                    "admin_clients": ["test_client"],
+                    "admin_users": ["@admin:test.example.com"],
+                    "client_registration": {
+                        "allow_host_mismatch": False,
+                        "allow_insecure_uris": False,
+                    },
+                }
+            },
+        }
+    )
+
+
+@pytest.fixture
+def basic_mas_config_with_keys(tmp_path, basic_mas_config):
+    """MAS configuration with keys directory and sample keys."""
+
+    # Create keys directory
+    keys_dir = tmp_path / "mas" / "keys"
+    keys_dir.mkdir(parents=True)
+
+    # Generate and save RSA key using PKCS1 format
+    rsa_key = rsa.generate_private_key(public_exponent=65537, key_size=2048, backend=default_backend())
+    rsa_pem = rsa_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.TraditionalOpenSSL,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    (keys_dir / "rsa_key.pem").write_bytes(rsa_pem)
+
+    # Generate and save ECDSA key using PKCS1 format
+    ecdsa_key = ec.generate_private_key(ec.SECP256R1(), backend=default_backend())
+    ecdsa_pem = ecdsa_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.TraditionalOpenSSL,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    (keys_dir / "ecdsa_key.pem").write_bytes(ecdsa_pem)
+
+    config = dict(basic_mas_config)
+    config["secrets"]["keys_dir"] = str(keys_dir)
+    # Update config with keys directory
+    return frozendict(config)
+
+
+@pytest.fixture
+def basic_mas_config_with_individual_keys(basic_mas_config, tmp_path):
+    """MAS configuration with individual keys in the secrets.keys array for testing.
+
+    This fixture creates three key files:
+    - RSA key (index 0): Recognized format, will be imported as secret
+    - DSA key (index 1): Unrecognized format, will NOT be imported as secret
+    - ECDSA key (index 2): Recognized format, will be imported as secret
+    """
+    # Create key files in tmp_path (which persists for the test duration)
+    tmpdir_path = tmp_path / "mas_keys"
+    tmpdir_path.mkdir(parents=True)
+
+    # Generate and save RSA key (recognized format)
+    rsa_key = rsa.generate_private_key(public_exponent=65537, key_size=2048, backend=default_backend())
+    rsa_pem = rsa_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.TraditionalOpenSSL,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    rsa_key_file = tmpdir_path / "rsa_key.pem"
+    rsa_key_file.write_bytes(rsa_pem)
+
+    # Generate and save DSA key (unrecognized format - DSA is not supported by ESS)
+    dsa_key = dsa.generate_private_key(key_size=2048, backend=default_backend())
+    dsa_pem = dsa_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.TraditionalOpenSSL,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    dsa_key_file = tmpdir_path / "dsa_key.pem"
+    dsa_key_file.write_bytes(dsa_pem)
+
+    # Generate and save ECDSA key (recognized format)
+    ecdsa_key = ec.generate_private_key(ec.SECP256R1(), backend=default_backend())
+    ecdsa_pem = ecdsa_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.TraditionalOpenSSL,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    ecdsa_key_file = tmpdir_path / "ecdsa_key.pem"
+    ecdsa_key_file.write_bytes(ecdsa_pem)
+
+    config = dict(basic_mas_config)
+    config["secrets"]["keys"] = [
+        {"key_file": str(rsa_key_file)},  # Recognized: RSA
+        {"key_file": str(dsa_key_file)},  # Unrecognized: DSA - should NOT be imported
+        {"key_file": str(ecdsa_key_file)},  # Recognized: ECDSA with secp256r1
+    ]
+    # Update config with keys directory
+    return frozendict(config)
+
+
+@pytest.fixture
+def rsa_key_pem():
+    """Generate a sample RSA private key in PEM format using PKCS1."""
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048, backend=default_backend())
+    return key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.TraditionalOpenSSL,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+
+
+@pytest.fixture
+def rsa_key_der():
+    """Generate a sample RSA private key in DER format using PKCS1."""
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048, backend=default_backend())
+    return key.private_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PrivateFormat.TraditionalOpenSSL,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+
+
+@pytest.fixture
+def ecdsa_key_pem():
+    """Generate a sample ECDSA Prime256v1 private key in PEM format using PKCS1."""
+
+    key = ec.generate_private_key(ec.SECP256R1(), backend=default_backend())
+    return key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.TraditionalOpenSSL,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+
+
+@pytest.fixture
+def ecdsa_key_der():
+    """Generate a sample ECDSA Prime256v1 private key in DER format using PKCS1."""
+
+    key = ec.generate_private_key(ec.SECP256R1(), backend=default_backend())
+    return key.private_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PrivateFormat.TraditionalOpenSSL,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+
+
+@pytest.fixture
+def ecdsa_secp256k1_key_pem():
+    """Generate a sample ECDSA Secp256k1 private key in PEM format using PKCS1."""
+    key = ec.generate_private_key(ec.SECP256K1(), backend=default_backend())
+    return key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.TraditionalOpenSSL,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+
+
+@pytest.fixture
+def ecdsa_secp256k1_key_der():
+    """Generate a sample ECDSA Secp256k1 private key in DER format using PKCS1."""
+    key = ec.generate_private_key(ec.SECP256K1(), backend=default_backend())
+    return key.private_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PrivateFormat.TraditionalOpenSSL,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+
+
+@pytest.fixture
+def ecdsa_secp384r1_key_pem():
+    """Generate a sample ECDSA Secp384r1 private key in PEM format using PKCS1."""
+
+    key = ec.generate_private_key(ec.SECP384R1(), backend=default_backend())
+    return key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.TraditionalOpenSSL,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+
+
+@pytest.fixture
+def ecdsa_secp384r1_key_der():
+    """Generate a sample ECDSA Secp384r1 private key in DER format using PKCS1."""
+    key = ec.generate_private_key(ec.SECP384R1(), backend=default_backend())
+    return key.private_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PrivateFormat.TraditionalOpenSSL,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+
+
+@pytest.fixture
+def basic_hookshot_config():
+    """Basic Hookshot configuration for testing."""
+    return frozendict(
+        {
+            "bridge": {
+                "domain": "test.example.com",
+                "url": "http://synapse:8008",
+                "mediaUrl": "https://matrix.example.com",
+                "port": 9993,
+                "bindAddress": "0.0.0.0",
+            },
+            "logging": {
+                "level": "info",
+                "colorize": True,
+                "json": False,
+                "timestampFormat": "HH:mm:ss:SSS",
+            },
+            "user": {
+                "localpart": "hookshot",
+            },
+            "enableEncryption": False,
+            "listeners": [
+                {
+                    "port": 9000,
+                    "bindAddress": "0.0.0.0",
+                    "resources": ["webhooks"],
+                },
+                {
+                    "port": 9001,
+                    "bindAddress": "0.0.0.0",
+                    "resources": ["widgets"],
+                },
+            ],
+        }
+    )
+
+
+@pytest.fixture
+def hookshot_config_with_custom_listeners(basic_hookshot_config):
+    """Hookshot configuration with custom listeners for testing."""
+    return frozendict(basic_hookshot_config) | {
+        "listeners": [
+            {
+                "port": 9010,
+                "bindAddress": "0.0.0.0",
+                "resources": ["custom_service"],
+            }
+        ]
+    }
+
+
+@pytest.fixture
+def hookshot_config_with_passfile(tmp_path, basic_hookshot_config):
+    """Hookshot configuration with a passkey file."""
+    # Create passkey file
+    passkey_file = tmp_path / "passkey.pem"
+    passkey_content = """-----BEGIN PRIVATE KEY-----
+MIIJQQIBADANBgkqhkiG9w0BAQEFAASCCSswggknAgEAAoICAQDLtjXE9gRU9GVE
+2Kt8VQORnOOlNlPvTwosXeSvJKl0llRW3ajDqpfbHfG2BOTvnHEqfO5KQGXCwBmx
+3a0sbQ0x4upx47vOpX+zpOaF3gor
+-----END PRIVATE KEY-----"""
+    passkey_file.write_text(passkey_content)
+
+    # Add passFile to config
+    return frozendict(basic_hookshot_config) | {"passFile": str(passkey_file)}
+
+
+@pytest.fixture
+def helm_validator():
+    """
+    Fixture for validating generated values against Helm templates.
+
+    Returns:
+        A callable that takes values dict and returns (success, message) tuple
+    """
+
+    def _validate(values: dict) -> tuple[bool, str]:
+        return validate_helm_template(values)
+
+    return _validate
+
+
+@pytest.fixture
+def basic_well_known_client_config():
+    """Basic well-known client configuration for testing."""
+    return frozendict(
+        {
+            "m.homeserver": {
+                "base_url": "https://matrix.example.com",
+                "server_name": "test.example.com",
+            },
+            "org.matrix.msc2965.authentication": {
+                "account": "https://auth.example.com/account",
+                "issuer": "https://auth.example.com/",
+            },
+            # Add an untracked value to ensure the client entry is created
+            "m.custom": {"setting": "value"},
+        }
+    )
+
+
+@pytest.fixture
+def basic_well_known_server_config():
+    """Basic well-known server configuration for testing."""
+    return frozendict(
+        {
+            "m.server": "test.example.com:443",
+            # Add an untracked value to ensure the server entry is created
+            "m.custom_server": "value",
+        }
+    )
+
+
+@pytest.fixture
+def basic_well_known_support_config():
+    """Basic well-known support configuration for testing."""
+    return frozendict({"im.vector.matrix": {"room": "#support:element.io"}})
+
+
+@pytest.fixture
+def write_well_known_configs(tmp_path):
+    """Helper fixture to write well-known delegation config files."""
+    import json
+
+    def _write_configs(client_config, server_config, support_config):
+        (tmp_path / "client.json").write_text(json.dumps(client_config, indent=2))
+        (tmp_path / "server.json").write_text(json.dumps(server_config, indent=2))
+        (tmp_path / "support.json").write_text(json.dumps(support_config, indent=2))
+        return tmp_path
+
+    return _write_configs

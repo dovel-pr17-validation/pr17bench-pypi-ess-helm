@@ -1,0 +1,49 @@
+version = 1
+
+[[annotations]]
+path = "charts/**/Chart.lock"
+SPDX-FileCopyrightText = ["Copyright 2024-2025 New Vector Ltd", "Copyright 2025 Element Creations Ltd"]
+SPDX-License-Identifier = "AGPL-3.0-only"
+
+[[annotations]]
+path = "charts/**/*.json"
+SPDX-FileCopyrightText = ["Copyright 2024-2025 New Vector Ltd", "Copyright 2025-2026 Element Creations Ltd"]
+SPDX-License-Identifier = "AGPL-3.0-only"
+
+[[annotations]]
+path = "uv.lock"
+SPDX-FileCopyrightText = ["Copyright 2026 Element Creations Ltd"]
+SPDX-License-Identifier = "AGPL-3.0-only"
+
+[[annotations]]
+path = ".python-version"
+SPDX-FileCopyrightText = ["Copyright 2026 Element Creations Ltd"]
+SPDX-License-Identifier = "AGPL-3.0-only"
+
+[[annotations]]
+path = "scripts/testdata/**/**/*.json"
+SPDX-FileCopyrightText = ["Copyright 2024-2025 New Vector Ltd", "Copyright 2025-2026 Element Creations Ltd"]
+SPDX-License-Identifier = "AGPL-3.0-only"
+
+[[annotations]]
+path = "newsfragments/*.md"
+SPDX-FileCopyrightText = ["Copyright 2025 New Vector Ltd", "Copyright 2025-2026 Element Creations Ltd"]
+SPDX-License-Identifier = "AGPL-3.0-only"
+precedence = "aggregate"
+
+[[annotations]]
+path = "packages/ess-migration-tool/newsfragments/*.md"
+SPDX-FileCopyrightText = ["Copyright 2026 Element Creations Ltd"]
+SPDX-License-Identifier = "AGPL-3.0-only"
+precedence = "aggregate"
+
+[[annotations]]
+path = "packages/ess-migration-tool/assets/*.gif"
+SPDX-FileCopyrightText = ["Copyright 2026 Element Creations Ltd"]
+SPDX-License-Identifier = "AGPL-3.0-only"
+precedence = "aggregate"
+
+[[annotations]]
+path = "docs/assets/images/*.png"
+SPDX-FileCopyrightText = ["Copyright 2025 New Vector Ltd", "Copyright 2025-2026 Element Creations Ltd"]
+SPDX-License-Identifier = "AGPL-3.0-only"

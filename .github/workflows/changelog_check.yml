@@ -1,0 +1,76 @@
+# Copyright 2025 New Vector Ltd
+# Copyright 2025-2026 Element Creations Ltd
+#
+# SPDX-License-Identifier: AGPL-3.0-only
+
+name: Changelog
+on:
+  pull_request:
+  push:
+    branches:
+    - main
+    - 'maintenance/*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check-newsfile:
+    if: ${{ (github.event_name == 'pull_request') && (github.base_ref == 'main' || contains(github.base_ref, 'release-')) && github.actor != 'dependabot[bot]' && github.actor != 'github-actions[bot]' && github.actor != 'renovate[bot]' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+        with:
+          enable-cache: true
+          activate-environment: true
+
+      - name: Set up UV environment
+        run: uv sync
+
+      - name: Run towncrier check
+        env:
+          GHEVENTNUMBER: ${{ github.event.number }}
+        run: |
+          # Fix/workaround for "detected dubious ownership in repository"
+          git config --global --add safe.directory "${GITHUB_WORKSPACE}"
+          scripts/check_newsfragment.sh "${GHEVENTNUMBER}"
+
+  preview-changelog:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+        with:
+          enable-cache: true
+          activate-environment: true
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+        with:
+          enable-cache: true
+
+      - name: Set up UV environment
+        run: uv sync
+
+      - name: Run towncrier build --draft
+        run: |
+          version=$(yq '.version' charts/matrix-stack/Chart.yaml)
+
+          echo "CHANGELOG.md will look like:"
+          towncrier build --draft --version "$version"
+          echo ""
+
+          echo "artifacthub.io's changes will look like:"
+          ./scripts/towncrier_to_helm_annotation.py charts/matrix-stack
+          yq '.annotations["artifacthub.io/changes"]' charts/matrix-stack/Chart.yaml

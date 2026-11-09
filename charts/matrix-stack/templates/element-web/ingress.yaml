@@ -1,0 +1,14 @@
+{{- /*
+Copyright 2024 New Vector Ltd
+Copyright 2025-2026 Element Creations Ltd
+
+SPDX-License-Identifier: AGPL-3.0-only
+*/ -}}
+{{- with .Values.elementWeb -}}
+{{- include "element-io.ess-library.inboundTrafficHandler.ingress" (dict "root" $ "context" (dict
+  "component" .
+  "componentName" "element-web"
+  "ingressName" "element-web"
+  "labels" (include "element-io.element-web.labels" (dict "root" $ "context" .))
+)) }}
+{{- end -}}

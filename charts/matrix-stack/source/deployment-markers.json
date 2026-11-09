@@ -1,0 +1,69 @@
+{
+  "$id": "file://deployment-markers",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "enabled": {
+      "type": "boolean"
+    },
+    "rbac": {
+      "type": "object",
+      "properties": {
+        "create": {
+          "type": "boolean"
+        }
+      }
+    },
+    "labels": {
+      "$ref": "file://common/labels.json"
+    },
+    "annotations": {
+      "$ref": "file://common/workloadAnnotations.json"
+    },
+    "extraEnv": {
+      "$ref": "file://common/extraEnv.json"
+    },
+    "extraVolumes": {
+      "$ref": "file://common/extraVolumes.json"
+    },
+    "extraVolumeMounts": {
+      "$ref": "file://common/extraVolumeMounts.json"
+    },
+    "extraInitContainers": {
+      "$ref": "file://common/extraInitContainers.json"
+    },
+    "containersSecurityContext": {
+      "$ref": "file://common/containersSecurityContext.json"
+    },
+    "nodeSelector": {
+      "$ref": "file://common/nodeSelector.json"
+    },
+    "priorityClassName": {
+      "type": "string"
+    },
+    "schedulerName": {
+      "type": "string"
+    },
+    "runtimeClassName": {
+      "type": "string"
+    },
+    "affinity": {
+      "$ref": "file://common/affinity.json"
+    },
+    "podSecurityContext": {
+      "$ref": "file://common/podSecurityContext.json"
+    },
+    "resources": {
+      "$ref": "file://common/resources.json"
+    },
+    "serviceAccount": {
+      "$ref": "file://common/serviceAccount.json"
+    },
+    "tolerations": {
+      "$ref": "file://common/tolerations.json"
+    },
+    "topologySpreadConstraints": {
+      "$ref": "file://common/topologySpreadConstraints.json"
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{{- /*
+Copyright 2024-2025 New Vector Ltd
+Copyright 2025-2026 Element Creations Ltd
+
+SPDX-License-Identifier: AGPL-3.0-only
+*/ -}}
+
+{{- with $.Values.wellKnownDelegation -}}
+{{- include "element-io.ess-library.inboundTrafficHandler.ingress" (dict "root" $ "context" (dict
+  "component" .
+  "componentName" "well-known-delegation"
+  "ingressName" "well-known"
+  "host" $.Values.serverName
+  "labels" (include "element-io.well-known-delegation-ingress.labels" (dict "root" $ "context" $.Values.haproxy))
+)) }}
+{{- end -}}

@@ -1,0 +1,57 @@
+# Copyright 2026 Element Creations Ltd
+#
+# SPDX-License-Identifier: AGPL-3.0-only
+
+[project]
+name = "ess-community-integration-tests"
+version = "26.3.2.dev1"
+readme = "README.md"
+authors = [
+  { name = "Element Creations Ltd", email = "contact@element.io" },
+]
+license = { text = "AGPL-3.0-only" }
+requires-python = ">=3.11.7,<4.0"
+dependencies = [
+  "aiohttp-retry>=2.9.1",
+  "aiohttp>=3.14.3",
+  "cryptography>=50.0.0",
+  "httpx-retries>=0.6.0",
+  "jsonschema>=4.26.0",
+  "lightkube>=1.0.0",
+  "platformdirs>=4.9.2",
+  "prometheus-client>=0.26.0",
+  "pyhelm3>=0.5.7",
+  "pytest-asyncio-cooperative>=0.40.0",
+  "pytest-kubernetes>=0.7.2",
+  "pytest>=8.4.2,<9", # pytest 9 breaks pytest-asyncio-cooperative (see #1301)
+  "python-dotenv>=1.2.2",
+  "python-on-whales>=0.80.0",
+  "pyyaml>=6.0.3",
+  "rapidfuzz>=3.14.3",
+  "semver>=3.0.4",
+  "signedjson>=1.1.4",
+  "typer>=0.27.1",
+]
+
+# Playwright is optional: it publishes no packages for musl hosts (e.g. Alpine Linux).
+# On glibc hosts, consumers can install it with this extra:
+#   pip install ess-community-integration-tests[browser]
+# On musl hosts, use scripts/setup_playwright_controller.sh instead (see its header).
+[project.optional-dependencies]
+browser = [
+  "playwright>=1.62.0",
+]
+
+
+[tool.uv.build-backend]
+    module-name = "integration"
+    module-root = ""
+
+[project.scripts]
+setup-ess-cluster = "integration:scripts.setup_cluster"
+pytest-ess = "integration:scripts.run_tests"
+collect-ess-logs = "integration:scripts.collect_ess_logs"
+
+[build-system]
+requires = ["uv_build>=0.13.0,<0.14.0"]
+build-backend = "uv_build"

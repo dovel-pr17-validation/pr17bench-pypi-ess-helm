@@ -1,0 +1,118 @@
+{{- /*
+Copyright 2026 Element Creations Ltd
+
+SPDX-License-Identifier: AGPL-3.0-only
+*/ -}}
+
+{{- if (include "element-io.valkey.internalValkeyEnabled" (dict "root" $)) -}}
+{{- with (mustMergeOverwrite ($.Values.valkey | deepCopy) ($.Values.redis | deepCopy)) -}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+{{- with .annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+{{- end }}
+  labels:
+    {{- include "element-io.valkey.labels" (dict "root" $ "context" (dict "image" .image "labels" .labels)) | nindent 4 }}
+    k8s.element.io/valkey-config-hash: "{{ include "element-io.valkey.configmap-data" (dict "root" $ "context" .) | sha1sum }}"
+  name: {{ $.Release.Name }}-valkey
+  namespace: {{ $.Release.Namespace }}
+spec:
+  {{ include "element-io.ess-library.workloads.commonSpec" (dict "root" $ "context" (dict "nameSuffix" "valkey" "kind" "StatefulSet" "componentValues" .)) | nindent 2 }}
+  template:
+    metadata:
+      labels:
+        {{- include "element-io.valkey.labels" (dict "root" $ "context" (dict "image" .image "labels" .labels "withChartVersion" false)) | nindent 8 }}
+        k8s.element.io/valkey-config-hash: "{{ include "element-io.valkey.configmap-data" (dict "root" $ "context" .) | sha1sum }}"
+{{- with .annotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+{{- end }}
+    spec:
+{{- include "element-io.ess-library.pods.commonSpec" (dict "root" $ "context" (dict "componentValues" . "instanceSuffix" "valkey" "kind" "StatefulSet")) | nindent 6 }}
+{{- with .extraInitContainers }}
+      initContainers:
+      {{- toYaml . | nindent 6 }}
+{{- end }}
+      containers:
+      - name: valkey
+        args:
+        - "/config/valkey.conf"
+        {{- include "element-io.ess-library.pods.image" (dict "root" $ "context" .image) | nindent 8 }}
+{{- with .containersSecurityContext }}
+        securityContext:
+          {{- toYaml . | nindent 10 }}
+{{- end }}
+        {{- include "element-io.ess-library.pods.env" (dict "root" $ "context" (dict "componentValues" . "componentName" "valkey")) | nindent 8 }}
+        ports:
+        - containerPort: 6379
+          name: valkey
+          protocol: TCP
+        startupProbe: {{- include "element-io.ess-library.pods.probe" .startupProbe | nindent 10 }}
+          tcpSocket:
+            port: valkey
+        livenessProbe: {{- include "element-io.ess-library.pods.probe" .livenessProbe | nindent 10 }}
+          tcpSocket:
+            port: valkey
+        readinessProbe: {{- include "element-io.ess-library.pods.probe" .readinessProbe | nindent 10 }}
+          exec:
+            command:
+            - valkey-cli
+            - ping
+{{- with .resources }}
+        resources:
+          {{- toYaml . | nindent 10 }}
+{{- end }}
+        volumeMounts:
+        - mountPath: /config/valkey.conf
+          name: config
+          readOnly: true
+          subPath: valkey.conf
+{{- range .extraVolumeMounts }}
+        - {{ (. | toYaml) | nindent 10 }}
+{{- end }}
+{{- with (mustMergeOverwrite (.valkeyExporter | deepCopy) ((.redisExporter | default dict) | deepCopy)) }}
+      - name: valkey-exporter
+        {{- include "element-io.ess-library.pods.image" (dict "root" $ "context" .image) | nindent 8 }}
+{{- with .containersSecurityContext }}
+        securityContext:
+          {{- toYaml . | nindent 10 }}
+{{- end }}
+        {{- include "element-io.ess-library.pods.env" (dict "root" $ "context" (dict "componentValues" . "componentName" "valkey-exporter")) | nindent 8 }}
+        ports:
+        - name: metrics
+          containerPort: 9121
+        startupProbe: {{- include "element-io.ess-library.pods.probe" .startupProbe | nindent 10 }}
+          httpGet:
+            path: /metrics
+            port: metrics
+        livenessProbe: {{- include "element-io.ess-library.pods.probe" .livenessProbe | nindent 10 }}
+          httpGet:
+            path: /metrics
+            port: metrics
+        readinessProbe: {{- include "element-io.ess-library.pods.probe" .readinessProbe | nindent 10 }}
+          httpGet:
+            path: /metrics
+            port: metrics
+{{- with .extraVolumeMounts }}
+        volumeMounts:
+{{- range . }}
+        - {{ (. | toYaml) | nindent 10 }}
+{{- end }}
+{{- end }}
+{{- with .resources }}
+        resources:
+          {{- toYaml . | nindent 10 }}
+{{- end }}
+{{- end }}
+      volumes:
+      - configMap:
+          name: "{{ $.Release.Name }}-valkey"
+          defaultMode: 288
+        name: config
+{{- range .extraVolumes }}
+      - {{- (tpl (. | toYaml) $) | nindent 8 }}
+{{- end }}
+{{- end }}
+{{- end }}

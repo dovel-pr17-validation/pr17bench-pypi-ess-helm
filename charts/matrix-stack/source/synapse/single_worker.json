@@ -1,0 +1,25 @@
+{
+  "properties": {
+    "enabled": {
+      "type": "boolean"
+    },
+    "replicas": {
+      "minimum": 0,
+      "maximum": 1,
+      "type": "integer"
+    },
+    "resources": {
+      "$ref": "file://common/resources.json"
+    },
+    "livenessProbe": {
+      "$ref": "file://common/probe.json"
+    },
+    "readinessProbe": {
+      "$ref": "file://common/probe.json"
+    },
+    "startupProbe": {
+      "$ref": "file://common/probe.json"
+    }
+  },
+  "type": "object"
+}

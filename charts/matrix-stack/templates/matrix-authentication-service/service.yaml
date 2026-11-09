@@ -1,0 +1,30 @@
+{{- /*
+Copyright 2025 New Vector Ltd
+Copyright 2025-2026 Element Creations Ltd
+
+SPDX-License-Identifier: AGPL-3.0-only
+*/ -}}
+
+{{- with .Values.matrixAuthenticationService -}}
+{{- if .enabled -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $.Release.Name }}-matrix-authentication-service
+  namespace: {{ $.Release.Namespace }}
+{{- include "element-io.ess-library.ingress-service.annotations" (dict "root" $ "context" .ingress) | nindent 2 }}
+  labels:
+    {{- include "element-io.matrix-authentication-service.labels" (dict "root" $ "context" .) | nindent 4 }}
+spec:
+{{- include "element-io.ess-library.ingress-service.spec" (dict "root" $ "context" .ingress) | nindent 2 }}
+  ports:
+  - port: 8080
+    protocol: TCP
+    name: http
+  - port: 8081
+    protocol: TCP
+    name: internal
+  selector:
+    app.kubernetes.io/instance: "{{ $.Release.Name }}-matrix-authentication-service"
+{{- end -}}
+{{- end -}}

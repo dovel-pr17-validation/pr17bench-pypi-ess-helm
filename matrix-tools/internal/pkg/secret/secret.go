@@ -1,0 +1,177 @@
+// Copyright 2025 New Vector Ltd
+// Copyright 2025-2026 Element Creations Ltd
+//
+// SPDX-License-Identifier: AGPL-3.0-only
+// internal/pkg/secret/secret.go
+
+package secret
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/hex"
+	"fmt"
+	"math/big"
+	"strconv"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+)
+
+type SecretType int
+
+const (
+	UnknownSecretType SecretType = iota
+	Rand32
+	SigningKey
+	RandBytes
+	Registration
+	RSA
+	EcdsaPrime256v1
+	X25519
+	ExpireKey
+)
+
+func GenerateSecret(client kubernetes.Interface, secretLabels map[string]string, generatedSecretsTypes map[string]SecretType,
+	namespace string, name string, key string, secretType SecretType, generatorArgs []string) error {
+	ctx := context.Background()
+
+	secretsClient := client.CoreV1().Secrets(namespace)
+	secretMeta := metav1.ObjectMeta{
+		Name:      name,
+		Namespace: namespace,
+		Labels:    secretLabels,
+	}
+	// Fetch the existing secret or initialize an empty one
+	existingSecret, err := secretsClient.Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		existingSecret, err = secretsClient.Create(ctx, &corev1.Secret{
+			ObjectMeta: secretMeta, Data: nil}, metav1.CreateOptions{},
+		)
+		if err != nil {
+			return fmt.Errorf("failed to initialize secret: %w", err)
+		}
+	} else {
+		if managedBy, ok := existingSecret.Labels["app.kubernetes.io/managed-by"]; ok {
+			if managedBy != "matrix-tools-init-secrets" {
+				return fmt.Errorf("secret %s/%s is not managed by this matrix-tools-init-secrets", namespace, name)
+			}
+		} else {
+			return fmt.Errorf("secret %s/%s is not managed by this matrix-tools-init-secrets", namespace, name)
+		}
+		// Make sure the labels are set correctly
+		existingSecret.Labels = secretLabels
+	}
+
+	// Add or update the key in the data
+	if existingSecret.Data == nil {
+		existingSecret.Data = make(map[string][]byte)
+	}
+	if existingData, ok := existingSecret.Data[key]; !ok || (secretType == SigningKey &&
+		mustBeRotated(existingSecret.Data, key) || secretType == Registration) {
+		switch secretType {
+		case Rand32:
+			if randomString, err := generateRandomString(32); err == nil {
+				existingSecret.Data[key] = randomString
+			}
+		case SigningKey:
+			if signingKey, err := generateSynapseSigningKey("1"); err == nil {
+				existingSecret.Data[key] = []byte(signingKey)
+			} else {
+				return fmt.Errorf("failed to generate signing key: %w", err)
+			}
+		case RandBytes:
+			if len(generatorArgs) < 2 {
+				return fmt.Errorf("randbytes requires length and encoding arguments: randbytes:<length>:<encoding>")
+			}
+			length, err := strconv.Atoi(generatorArgs[0])
+			if err != nil {
+				return fmt.Errorf("failed to parse length for randbytes: %w", err)
+			}
+			encoding := generatorArgs[1]
+			if encodedBytes, err := generateRandomBytes(length, encoding); err == nil {
+				existingSecret.Data[key] = encodedBytes
+			} else {
+				return fmt.Errorf("failed to generate randbytes: %w", err)
+			}
+		case RSA:
+			bits, err := strconv.Atoi(generatorArgs[0])
+			if err != nil {
+				return fmt.Errorf("failed to parse bits for RSA key: %w", err)
+			}
+			if keyBytes, err := generateRSA(bits, generatorArgs[1]); err == nil {
+				existingSecret.Data[key] = keyBytes
+			} else {
+				return fmt.Errorf("failed to generate RSA key: %w", err)
+			}
+		case EcdsaPrime256v1:
+			if keyBytes, err := generateEcdsaPrime256v1DER(); err == nil {
+				existingSecret.Data[key] = keyBytes
+			} else {
+				return fmt.Errorf("failed to generate ECDSA Prime256v1 key: %w", err)
+			}
+		case X25519:
+			if len(generatorArgs) < 1 {
+				return fmt.Errorf("x25519 requires format argument: x25519:<der or base64>")
+			}
+			if keyBytes, err := generateX25519(generatorArgs[0]); err == nil {
+				existingSecret.Data[key] = keyBytes
+			} else {
+				return fmt.Errorf("failed to generate X25519 key: %w", err)
+			}
+		case ExpireKey:
+			existingSecret.Data[key], err = generateExpiredKeys(existingSecret.Data, generatedSecretsTypes)
+			if err != nil {
+				return fmt.Errorf("failed to generate : %w", err)
+			}
+		case Registration:
+			if registrationString, err := generateOrUpdateRegistration(generatorArgs[0], existingData); err == nil {
+				existingSecret.Data[key] = registrationString
+			} else {
+				return fmt.Errorf("failed to generate or update registration: %w", err)
+			}
+		default:
+			return fmt.Errorf("unknown secret type for: %s:%s", name, key)
+		}
+	}
+
+	_, err = secretsClient.Update(ctx, existingSecret, metav1.UpdateOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to update secret: %w", err)
+	}
+	fmt.Printf("Successfully updated secret: %s:%s\n", name, key)
+	return nil
+}
+
+func generateRandomString(size int) ([]byte, error) {
+	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	bytes := make([]byte, size)
+	for i := range bytes {
+		randIndex, err := rand.Int(rand.Reader, big.NewInt(int64(len(charset))))
+		if err != nil {
+			return nil, fmt.Errorf("failed to generate random string : %w", err)
+		}
+		bytes[i] = charset[randIndex.Int64()]
+	}
+	return bytes, nil
+}
+
+func generateRandomBytes(length int, encoding string) ([]byte, error) {
+	key := make([]byte, length)
+	if _, err := rand.Read(key); err != nil {
+		return nil, fmt.Errorf("failed to generate key : %w", err)
+	}
+
+	switch encoding {
+	case "hex":
+		encodedKey := make([]byte, hex.EncodedLen(len(key)))
+		hex.Encode(encodedKey, key)
+		return encodedKey, nil
+	case "paddedBase64":
+		return []byte(base64.StdEncoding.EncodeToString(key)), nil
+	default:
+		return nil, fmt.Errorf("unsupported encoding: %s. Supported encodings: hex, base64", encoding)
+	}
+}

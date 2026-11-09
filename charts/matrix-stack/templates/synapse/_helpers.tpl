@@ -1,0 +1,381 @@
+{{- /*
+Copyright 2024-2025 New Vector Ltd
+Copyright 2025-2026 Element Creations Ltd
+
+SPDX-License-Identifier: AGPL-3.0-only
+*/ -}}
+
+{{- define "element-io.synapse.validations" }}
+{{ $root := .root }}
+{{- with required "element-io.synapse.validations missing context" .context -}}
+{{ $messages := list }}
+{{- with include "element-io.ess-library.inboundTrafficHandler.validateHost" (dict "root" $root "context" (dict "component" . "componentName" "synapse")) }}
+{{ $messages = append $messages . }}
+{{- end }}
+{{- if not $root.Values.serverName -}}
+{{ $messages = append $messages "serverName is required when synapse.enabled=true" }}
+{{- end }}
+{{- if and (not $root.Values.postgres.enabled) (not .postgres) -}}
+{{ $messages = append $messages "synapse.postgres is required when synapse.enabled=true but postgres.enabled=false" }}
+{{- end }}
+{{- with .additional }}
+  {{- range $key := (. | keys | uniq | sortAlpha) }}
+    {{- $prop := index $root.Values.synapse.additional $key }}
+    {{- if $prop.config }}
+      {{- $fragment := $prop.config | fromYaml }}
+      {{- if hasKey $fragment "Error" }}
+{{- $messages = append $messages (printf "synapse.additional['%s'] is invalid: %s" $key $fragment.Error) }}
+      {{- end }}
+    {{- end }}
+  {{- end }}
+{{- end }}
+{{- /* Deliberately not using element-io.matrix-authentication-service.readyToHandleAuth here as we want this to be enableable before syn2mas is initially run */}}
+{{- if and (dig "mas-helper" "enabled" false .workers) (not $root.Values.matrixAuthenticationService.enabled) }}
+{{ $messages = append $messages "synapse.workers.mas-helpers can't be enabled without matrixAuthenticationService.enabled=false" }}
+{{- end }}
+{{- /* Deliberately not using element-io.matrix-authentication-service.readyToHandleAuth here as we want this to be disabled before the actual migration */}}
+{{- if and (dig "sso-login" "enabled" false .workers) $root.Values.matrixAuthenticationService.enabled }}
+{{ $messages = append $messages "synapse.workers.sso-login can't be enabled when matrixAuthenticationService.enabled=true" }}
+{{- end }}
+{{ $messages | toJson }}
+{{- end }}
+{{- end }}
+
+{{- define "element-io.synapse.labels" -}}
+{{- $root := .root -}}
+{{- with required "element-io.synapse.labels missing context" .context -}}
+{{ include "element-io.ess-library.labels.common" (dict "root" $root "context" (dict "labels" .labels)) }}
+app.kubernetes.io/component: matrix-server
+app.kubernetes.io/name: synapse
+app.kubernetes.io/instance: {{ $root.Release.Name }}-synapse
+app.kubernetes.io/version: {{ include "element-io.ess-library.labels.makeSafe" .image.tag }}
+k8s.element.io/synapse-instance: {{ $root.Release.Name }}-synapse
+{{- end }}
+{{- end }}
+
+{{- define "element-io.synapse-check-config.labels" -}}
+{{- $root := .root -}}
+{{- with required "element-io.synapse.labels missing context" .context -}}
+{{ include "element-io.ess-library.labels.common" (dict "root" $root "context" (dict "labels" .labels "withChartVersion" .withChartVersion)) }}
+app.kubernetes.io/component: matrix-server
+app.kubernetes.io/name: synapse-check-config
+app.kubernetes.io/instance: {{ $root.Release.Name }}-synapse-check-config
+app.kubernetes.io/version: {{ include "element-io.ess-library.labels.makeSafe" $root.Values.synapse.image.tag }}
+k8s.element.io/synapse-instance: {{ $root.Release.Name }}-synapse-check-config
+{{- end }}
+{{- end }}
+
+{{- define "element-io.synapse-ingress.labels" -}}
+{{- $root := .root -}}
+{{- with required "element-io.synapse-ingress.labels missing context" .context -}}
+{{ include "element-io.ess-library.labels.common" (dict "root" $root "context" (dict "labels" .labels)) }}
+app.kubernetes.io/component: matrix-stack-ingress
+app.kubernetes.io/name: synapse
+app.kubernetes.io/instance: {{ $root.Release.Name }}-synapse
+k8s.element.io/target-name: haproxy
+k8s.element.io/target-instance: {{ $root.Release.Name }}-haproxy
+app.kubernetes.io/version: {{ include "element-io.ess-library.labels.makeSafe" .image.tag }}
+k8s.element.io/synapse-instance: {{ $root.Release.Name }}-synapse
+{{- end }}
+{{- end }}
+
+{{- define "element-io.synapse.process.labels" -}}
+{{- $root := .root -}}
+{{- with required "element-io.synapse.process.labels missing context" .context -}}
+{{ include "element-io.ess-library.labels.common" (dict "root" $root "context" (dict "labels" .labels "withChartVersion" .withChartVersion)) }}
+app.kubernetes.io/component: matrix-server
+app.kubernetes.io/name: synapse-{{ .processType }}
+app.kubernetes.io/instance: {{ $root.Release.Name }}-synapse-{{ .processType }}
+app.kubernetes.io/version: {{ include "element-io.ess-library.labels.makeSafe" .image.tag }}
+{{ if required "element-io.synapse.process.labels missing context.isHook" .isHook }}
+k8s.element.io/synapse-instance: {{ $root.Release.Name }}-synapse-check-config
+{{ else }}
+k8s.element.io/synapse-instance: {{ $root.Release.Name }}-synapse
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{- define "element-io.synapse.enabledWorkers" -}}
+{{- $root := .root -}}
+{{ $enabledWorkers := dict }}
+{{- range $workerType, $workerDetails := $root.Values.synapse.workers }}
+{{- if $workerDetails.enabled }}
+{{ $_ := set $enabledWorkers $workerType $workerDetails }}
+{{- end }}
+{{- end }}
+{{ $enabledWorkers | toJson }}
+{{- end }}
+
+{{- define "element-io.synapse.pvcName" -}}
+{{- $root := .root -}}
+{{- with required "element-io.synapse.pvcName missing context" .context -}}
+{{- if $root.Values.synapse.media.storage.existingClaim -}}
+{{ tpl $root.Values.synapse.media.storage.existingClaim $root }}
+{{- else -}}
+{{ $root.Release.Name }}-synapse-media
+{{- end -}}
+{{- end }}
+{{- end }}
+
+{{- define "element-io.synapse-python.overrideEnv" }}
+{{- $root := .root -}}
+{{- with required "element-io.synapse-python.overrideEnv missing context" .context -}}
+env:
+- name: "LD_PRELOAD"
+  value: "libjemalloc.so.2"
+{{- end -}}
+{{- end -}}
+
+{{- define "element-io.synapse.ingress.additionalPaths" -}}
+{{- $root := .root -}}
+{{- with required "element-io.synapse.ingress.additionalPaths missing context" .context -}}
+{{- if include "element-io.matrix-authentication-service.readyToHandleAuth" (dict "root" $root) }}
+{{- range $apiVersion := list "api/v1" "r0" "v3" "unstable" }}
+{{- range $apiSubpath := list "login" "refresh" "logout" }}
+- path: "/_matrix/client/{{ $apiVersion }}/{{ $apiSubpath }}"
+  availability: only_externally
+  service:
+    name: "{{ $root.Release.Name }}-matrix-authentication-service"
+    port:
+      name: http
+      number: 8080
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if and $root.Values.hookshot.enabled (not (include "element-io.ess-library.inboundTrafficHandler.host" (dict "root" $root "context" (dict "component" $root.Values.hookshot)))) }}
+- path: "/_matrix/hookshot/widgetapi/v1"
+  availability: only_externally
+  service:
+    name: "{{ $root.Release.Name }}-hookshot"
+    port:
+      name: widgets
+      number: 7778
+- path: "/_matrix/hookshot"
+  availability: only_externally
+  service:
+    name: "{{ $root.Release.Name }}-hookshot"
+    port:
+      name: webhooks
+      number: 7775
+{{- end -}}
+{{- range $root.Values.synapse.ingress.additionalPaths }}
+- {{ . | toYaml | indent 2 | trim }}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+
+{{- /* The filesystem structure is `/secrets`/<< secret name>>/<< secret key >>.
+        The non-defaulted values are handling the case where the credential is provided by an existing Secret
+        The default values are handling the case where the credential is provided plain in the Helm chart and we add it to our Secret with a well-known key.
+
+        These could be done as env vars with valueFrom.secretKeyRef, but that triggers CKV_K8S_35.
+        Environment variables values found in the config file as ${VARNAME} are parsed through go template engine before being replaced in the target file.
+*/}}
+{{- define "element-io.synapse.renderConfigOverrideEnv" }}
+{{- $root := .root -}}
+{{- with required "element-io.synapse.renderConfigOverrideEnv missing context" .context -}}
+{{- $isHook := required "element-io.synapse.renderConfigOverrideEnv requires context.isHook" .isHook }}
+env:
+- name: SYNAPSE_POSTGRES_PASSWORD
+  value: >-
+    {{
+      printf "{{ readfile \"/secrets/%s\" | quote }}"
+        (
+          include "element-io.ess-library.postgres-secret-path" (
+            dict "root" $root
+            "context" (dict
+              "essPassword" "synapse"
+              "initSecretKey" "POSTGRES_SYNAPSE_PASSWORD"
+              "componentPasswordPath" "synapse.postgres.password"
+              "defaultSecretName" (include "element-io.synapse.secret-name" (dict "root" $root "context" (dict "isHook" $isHook)))
+              "defaultSecretKey" "POSTGRES_PASSWORD"
+              "isHook" $isHook
+            )
+          )
+        )
+    }}
+- name: APPLICATION_NAME
+  value: >-
+    {{ printf "{{ hostname }}" }}
+{{- if $root.Values.synapse.redisOrValkey }}
+{{- if $root.Values.synapse.redisOrValkey.password }}
+- name: SYNAPSE_REDIS_PASSWORD
+  value: >-
+    {{
+      printf "{{ readfile \"/secrets/%s\" | quote }}"
+        (
+          include "element-io.ess-library.provided-secret-path" (
+            dict "root" $root
+            "context" (dict
+              "secretPath" "synapse.redisOrValkey.password"
+              "defaultSecretName" (include "element-io.synapse.secret-name" (dict "root" $root "context" (dict "isHook" $isHook)))
+              "defaultSecretKey" "REDIS_PASSWORD"
+            )
+          )
+        )
+    }}
+{{- end }}
+{{- else if $root.Values.synapse.redis }}
+{{- if $root.Values.synapse.redis.password }}
+- name: SYNAPSE_REDIS_PASSWORD
+  value: >-
+    {{
+      printf "{{ readfile \"/secrets/%s\" | quote }}"
+        (
+          include "element-io.ess-library.provided-secret-path" (
+            dict "root" $root
+            "context" (dict
+              "secretPath" "synapse.redis.password"
+              "defaultSecretName" (include "element-io.synapse.secret-name" (dict "root" $root "context" (dict "isHook" $isHook)))
+              "defaultSecretKey" "REDIS_PASSWORD"
+            )
+          )
+        )
+    }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{- define "element-io.synapse.configmap-name" }}
+{{- $root := .root }}
+{{- with required "element-io.synapse.configmap-name requires context" .context }}
+{{- $isHook := required "element-io.synapse.configmap-name requires context.isHook" .isHook }}
+{{- if $isHook }}
+{{- $root.Release.Name }}-synapse-hook
+{{- else }}
+{{- $root.Release.Name }}-synapse
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{- define "element-io.synapse.configmap-data" }}
+{{- $root := .root }}
+{{- with required "element-io.synapse.configmap-data requires context" .context }}
+{{- $isHook := required "element-io.synapse.configmap-data requires context.isHook" .isHook }}
+01-homeserver-underrides.yaml: |
+{{- (tpl ($root.Files.Get "configs/synapse/synapse-01-shared-underrides.yaml.tpl") (dict "root" $root)) | nindent 2 }}
+{{- /*02 files are user provided in Helm values and end up in the Secret*/}}
+{{- /*03 files are user provided as secrets rather than directly in Helm*/}}
+04-homeserver-overrides.yaml: |
+{{- (tpl ($root.Files.Get "configs/synapse/synapse-04-homeserver-overrides.yaml.tpl") (dict "root" $root "context" (mustMergeOverwrite ($root.Values.synapse | deepCopy) (dict "isHook" $isHook)))) | nindent 2 }}
+05-main.yaml: |
+{{- (tpl ($root.Files.Get "configs/synapse/synapse-05-process-specific.yaml.tpl") (dict "root" $root "context" (dict "processType" "main" "isHook" $isHook))) | nindent 2 }}
+{{- if not $isHook }}
+{{- range $workerType, $workerDetails := (include "element-io.synapse.enabledWorkers" (dict "root" $root)) | fromJson }}
+05-{{ $workerType }}.yaml: |
+{{- (tpl ($root.Files.Get "configs/synapse/synapse-05-process-specific.yaml.tpl") (dict "root" $root "context" (dict "processType" $workerType "isHook" $isHook))) | nindent 2 }}
+{{- end }}
+{{- end }}
+log_config.yaml: |
+{{- (tpl ($root.Files.Get "configs/synapse/synapse-log-config.yaml.tpl") (dict "root" $root)) | nindent 2 }}
+{{- end }}
+{{- end }}
+
+
+{{- define "element-io.synapse-haproxy.configmap-data" -}}
+{{- $root := .root -}}
+429.http: |
+{{- (tpl ($root.Files.Get "configs/synapse/429.http.tpl") dict) | nindent 2 }}
+path_map_file: |
+{{- (tpl ($root.Files.Get "configs/synapse/path_map_file.tpl") (dict "root" $root)) | nindent 2 }}
+path_map_file_get: |
+{{- (tpl ($root.Files.Get "configs/synapse/path_map_file_get.tpl") (dict "root" $root)) | nindent 2 -}}
+{{- /* We accept this means that the ConfigMap & all hash labels using this helper changes on every chart version upgrade and the HAProxy will restart as a result.
+When we have a process to watch for file changes and send a reload signal to HAProxy this can move out of this helper and into the `ConfigMap` proper. */}}
+ess-version.json: |
+  {"version": "{{ $root.Chart.Version }}", "edition": "community"}
+{{- end -}}
+
+
+{{- define "element-io.synapse.appservices-config-files" -}}
+{{- $root := .root -}}
+{{- with required "element-io.synapse.appservices requires context" .context }}
+{{- $isHook := required "element-io.synapse.appservices context requires isHook" .isHook -}}
+{{- $appservicesFiles := list -}}
+{{- range $idx, $appservice := $root.Values.synapse.appservices }}
+{{- if $appservice.configMap }}
+{{ $appservicesFiles = append $appservicesFiles (printf "/as/%d/%s" $idx $appservice.configMapKey) }}
+{{- else }}
+{{ $appservicesFiles = append $appservicesFiles (printf "/as/%d/%s" $idx $appservice.secretKey) }}
+{{- end }}
+{{- end }}
+{{- if $root.Values.hookshot.enabled -}}
+{{- $appservicesFiles = append $appservicesFiles (printf "/secrets/%s"
+                (include "element-io.ess-library.init-secret-path" (
+                      dict "root" $root
+                      "context" (dict
+                        "secretPath" "hookshot.appserviceRegistration"
+                        "initSecretKey" "HOOKSHOT_REGISTRATION"
+                        "defaultSecretName" (include "element-io.hookshot.secret-name" (dict "root" $root "context"  (dict "isHook" $isHook)))
+                        "defaultSecretKey" "REGISTRATION"
+                      )
+                    ))) -}}
+{{- end -}}
+{{- if $root.Values.matrixRTC.enabled -}}
+{{- $appservicesFiles = append $appservicesFiles
+                (include "element-io.matrix-rtc-authorisation-service.appservice-registration-path" (dict "root" $root "context" (dict "isHook" $isHook))) -}}
+{{- end -}}
+{{- $appservicesFiles | toJson -}}
+{{- end }}
+{{- end }}
+
+
+{{- define "element-io.synapse.render-config-container" -}}
+{{- $root := .root -}}
+{{- with required "element-io.synapse.render-config-container missing context" .context }}
+{{- $processType := required "element-io.synapse.render-config-container context required processType" .processType -}}
+{{- $isHook := required "element-io.synapse.render-config-container context required isHook" .isHook -}}
+{{- $underridesSecrets := list }}
+{{- if $root.Values.initSecrets.enabled }}
+{{- $underridesSecrets = append $underridesSecrets (dict "configSecret" (printf "%s-generated" $root.Release.Name) "configSecretKey" "SYNAPSE_EXTRA") }}
+{{- end}}
+{{- include "element-io.ess-library.render-config-container" (dict "root" $root "context"
+            (dict "additionalPath" "synapse.additional"
+                  "nameSuffix" "synapse"
+                  "containerName" (.containerName | default "render-config")
+                  "templatesVolume" (.templatesVolume | default "plain-config")
+                  "underrides" (list "01-homeserver-underrides.yaml")
+                  "underridesSecrets" $underridesSecrets
+                  "overrides" (list "04-homeserver-overrides.yaml"
+                                    (eq $processType "check-config" | ternary "05-main.yaml" (printf "05-%s.yaml" $processType)))
+                  "outputFile" "homeserver.yaml"
+                  "resources" .resources
+                  "containersSecurityContext" .containersSecurityContext
+                  "extraEnv" .extraEnv
+                  "extraVolumeMounts" .extraVolumeMounts
+                  "isHook" $isHook)) }}
+{{- end }}
+{{- end }}
+
+
+{{- define "element-io.synapse.inboundTrafficHandler.paths" -}}
+{{- $root := .root -}}
+{{- with required "element-io.synapse.inboundTrafficHandler.paths missing context" .context -}}
+{{- $paths := list -}}
+{{- range (include "element-io.synapse.ingress.additionalPaths" (dict "root" $root "context" .)) | fromYamlArray -}}
+{{- if eq .availability "blocked" -}}
+{{- $paths = append $paths (dict "path" .path "availability" .availability "serviceName" (printf "%s-synapse" $root.Release.Name) "servicePortName" "haproxy-403" "servicePortNumber" 8009) -}}
+{{- else -}}
+{{- $entry := dict "path" .path "availability" .availability "serviceName" (tpl .service.name $root) -}}
+{{- with .service.port.name -}}
+{{- $_ := set $entry "servicePortName" . -}}
+{{- end -}}
+{{- with .service.port.number -}}
+{{- $_ := set $entry "servicePortNumber" . -}}
+{{- end -}}
+{{- $paths = append $paths $entry -}}
+{{- end -}}
+{{- end -}}
+{{- range $synapsePath := list "/_matrix" "/_synapse" -}}
+{{- $paths = append $paths (dict "path" $synapsePath "availability" "catch_all" "serviceName" (printf "%s-synapse" $root.Release.Name) "servicePortName" "haproxy-synapse" "servicePortNumber" 8008) -}}
+{{- end -}}
+{{- $paths | toYaml -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "element-io.synapse.internal-hostport" -}}
+{{- $root := .root -}}
+{{- $root.Release.Name }}-synapse.{{ $root.Release.Namespace }}.svc.{{ $root.Values.clusterDomain }}:8008
+{{- end -}}

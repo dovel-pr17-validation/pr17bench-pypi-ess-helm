@@ -1,0 +1,46 @@
+{#
+Copyright 2026 Element Creations Ltd
+
+SPDX-License-Identifier: AGPL-3.0-only
+#}
+
+# redis maxmemory and maxmemory-policy settings. See https://redis.io/docs/latest/develop/reference/eviction/
+# This value should be updated with changes to Valkey's memory requests and limits below
+maxMemory: 40mb
+maxMemoryPolicy: allkeys-lru
+
+# Use 0 replicas to stop Valkey
+replicas: 1
+
+{{- sub_schema_values.image(registry='docker.io', repository='valkey/valkey', tag='9.1.3-alpine') }}
+{{- sub_schema_values.labels() }}
+{{- sub_schema_values.workloadAnnotations() }}
+{{- sub_schema_values.containersSecurityContext() }}
+{{- sub_schema_values.extraEnv() }}
+{{- sub_schema_values.extraVolumes(name) }}
+{{- sub_schema_values.extraVolumeMounts(name) }}
+{{- sub_schema_values.extraInitContainers("Valkey") }}
+{{- sub_schema_values.nodeSelector() }}
+{{- sub_schema_values.priorityClassName() }}
+{{- sub_schema_values.schedulerName() }}
+{{- sub_schema_values.runtimeClassName() }}
+{{- sub_schema_values.affinity() }}
+{{- sub_schema_values.podSecurityContext(user_id='10002', group_id='10002') }}
+{{- sub_schema_values.resources(requests_memory='50Mi', requests_cpu='50m', limits_memory='50Mi') }}
+{{- sub_schema_values.serviceAccount() }}
+{{- sub_schema_values.serviceMonitors() }}
+{{- sub_schema_values.tolerations() }}
+{{- sub_schema_values.topologySpreadConstraints() }}
+{{- sub_schema_values.probe("liveness") }}
+{{- sub_schema_values.probe("readiness") }}
+{{- sub_schema_values.probe("startup", failureThreshold=5) }}
+
+valkeyExporter:
+  {{- sub_schema_values.image(registry='ghcr.io', repository='oliver006/redis_exporter', tag='v1.97.0') | indent(2) }}
+  {{- sub_schema_values.resources(requests_memory='10Mi', requests_cpu='10m', limits_memory='50Mi')| indent(2) }}
+  {{- sub_schema_values.extraVolumeMounts("Valkey Exporter") | indent(2) }}
+  {{- sub_schema_values.containersSecurityContext() | indent(2) }}
+  {{- sub_schema_values.extraEnv() | indent(2) }}
+  {{- sub_schema_values.probe("liveness", periodSeconds=6, timeoutSeconds=2) | indent(2) }}
+  {{- sub_schema_values.probe("readiness", periodSeconds=2, successThreshold=2, timeoutSeconds=2) | indent(2) }}
+  {{- sub_schema_values.probe("startup", failureThreshold=20, periodSeconds=2) | indent(2) }}

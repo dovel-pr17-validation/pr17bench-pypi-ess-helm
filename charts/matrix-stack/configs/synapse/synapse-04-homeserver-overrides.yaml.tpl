@@ -1,0 +1,249 @@
+{{- /*
+Copyright 2025 New Vector Ltd
+Copyright 2025-2026 Element Creations Ltd
+
+SPDX-License-Identifier: AGPL-3.0-only
+*/ -}}
+
+{{- $root := .root -}}
+{{- with required "synapse/synapse-04-homeserver-overrides.yaml.tpl missing context" .context }}
+{{- $isHook := required "element-io.synapse.config.shared-overrides requires context.isHook" .isHook -}}
+public_baseurl: https://{{ include "element-io.ess-library.inboundTrafficHandler.host" (dict "root" $root "context" (dict "component" .)) }}/
+server_name: {{ tpl $root.Values.serverName $root }}
+signing_key_path: /secrets/{{
+  include "element-io.ess-library.init-secret-path" (
+    dict "root" $root "context" (
+      dict "secretPath" "synapse.signingKey"
+           "initSecretKey" "SYNAPSE_SIGNING_KEY"
+           "defaultSecretName" (include "element-io.synapse.secret-name" (dict "root" $root "context" (dict "isHook" $isHook)))
+           "defaultSecretKey" "SIGNING_KEY"
+      )
+    ) }}
+enable_metrics: true
+log_config: "/conf/log_config.yaml"
+macaroon_secret_key_path:  /secrets/{{
+  include "element-io.ess-library.init-secret-path" (
+    dict "root" $root "context" (
+      dict "secretPath" "synapse.macaroon"
+           "initSecretKey" "SYNAPSE_MACAROON"
+           "defaultSecretName" (include "element-io.synapse.secret-name" (dict "root" $root "context" (dict "isHook" $isHook)))
+           "defaultSecretKey" "MACAROON"
+      )
+    ) }}
+registration_shared_secret_path: /secrets/{{
+  include "element-io.ess-library.init-secret-path" (
+    dict "root" $root "context" (
+      dict "secretPath" "synapse.registrationSharedSecret"
+           "initSecretKey" "SYNAPSE_REGISTRATION_SHARED_SECRET"
+           "defaultSecretName" (include "element-io.synapse.secret-name" (dict "root" $root "context" (dict "isHook" $isHook)))
+           "defaultSecretKey" "REGISTRATION_SHARED_SECRET"
+      )
+    ) }}
+
+database:
+  name: psycopg2
+  args:
+{{- /* We don't attempt to use passfile and mount the Secret directly due to
+https://github.com/kubernetes/kubernetes/issues/129043 / https://github.com/kubernetes/kubernetes/issues/81089 */}}
+{{- if .postgres }}
+    user: {{ .postgres.user }}
+    password: ${SYNAPSE_POSTGRES_PASSWORD}
+    dbname: {{ .postgres.database }}
+    host: {{ (tpl .postgres.host $root) }}
+    port: {{ .postgres.port | default 5432 }}
+    sslmode: {{ .postgres.sslMode | default "prefer" }}
+{{- else if $root.Values.postgres.enabled }}
+    user: "synapse_user"
+    password: ${SYNAPSE_POSTGRES_PASSWORD}
+    dbname: "synapse"
+    host: "{{ $root.Release.Name }}-postgres.{{ $root.Release.Namespace }}.svc.{{ $root.Values.clusterDomain }}"
+    port: 5432
+    sslmode: prefer
+{{ end }}
+
+    application_name: ${APPLICATION_NAME}
+
+# The default as of 1.27.0
+ip_range_blacklist:
+- '127.0.0.0/8'
+- '10.0.0.0/8'
+- '172.16.0.0/12'
+- '192.168.0.0/16'
+- '100.64.0.0/10'
+- '192.0.0.0/24'
+- '169.254.0.0/16'
+- '192.88.99.0/24'
+- '198.18.0.0/15'
+- '192.0.2.0/24'
+- '198.51.100.0/24'
+- '203.0.113.0/24'
+- '224.0.0.0/4'
+- '::1/128'
+- 'fe80::/10'
+- 'fc00::/7'
+- '2001:db8::/32'
+- 'ff00::/8'
+- 'fec0::/10'
+
+{{- if (include "element-io.matrix-authentication-service.readyToHandleAuth" (dict "root" $root)) }}
+matrix_authentication_service:
+  enabled: true
+  secret_path: /secrets/{{
+                include "element-io.ess-library.init-secret-path" (
+                      dict "root" $root
+                      "context" (dict
+                        "secretPath" "matrixAuthenticationService.synapseSharedSecret"
+                        "initSecretKey" "MAS_SYNAPSE_SHARED_SECRET"
+                        "defaultSecretName" (include "element-io.matrix-authentication-service.secret-name" (dict "root" $root "context" .))
+                        "defaultSecretKey" "SYNAPSE_SHARED_SECRET"
+                      )
+                  ) }}
+  endpoint: http://{{ $root.Release.Name }}-matrix-authentication-service.{{ $root.Release.Namespace }}.svc.{{ $root.Values.clusterDomain }}:8080/
+  force_http2: true
+{{- end }}
+
+{{- if or $root.Values.matrixRTC.enabled $root.Values.hookshot.enabled }}
+experimental_features:
+{{- if $root.Values.matrixRTC.enabled }}
+  # MSC4143: Matrix RTC Transport using Livekit Backend. This enables a client-server API for discovery of Matrix RTC backends
+  msc4143_enabled: true
+  # MSC4222 needed for syncv2 state_after. This allow clients to
+  # correctly track the state of the room.
+  msc4222_enabled: true
+  # MSC4502 lets the MatrixRTC Authorisation Service check room memberships without joining the rooms
+  msc4502_enabled: true
+  # MSC4512 proxies the MatrixRTC Authorisation Service endpoints (rtc/livekit) on the C-S and S-S APIs
+  msc4512_enabled: true
+{{- end }}
+{{- if $root.Values.hookshot.enabled }}
+  # MSCs required for Hookshot encryption support
+  # https://matrix-org.github.io/matrix-hookshot/latest/advanced/encryption.html
+  msc2409_to_device_messages_enabled: true
+  msc3202_device_masquerading: true
+  msc3202_transaction_extensions: true
+{{- end }}
+{{- end }}
+
+{{- if (include "element-io.matrix-authentication-service.readyToHandleAuth" (dict "root" $root)) }}
+
+password_config:
+  localdb_enabled: false
+  enabled: false
+{{- end }}
+{{- if $root.Values.matrixRTC.enabled }}
+
+matrix_rtc:
+  transports:
+  - type: livekit
+    url: {{ include "element-io.matrix-rtc-sfu.url" (dict "root" $root) }}
+    livekit_service_url: {{ (printf "https://%s" (include "element-io.ess-library.inboundTrafficHandler.host" (dict "root" $root "context" (dict "component" $root.Values.matrixRTC)))) }}
+{{- end }}
+
+{{- if dig "appservice" "enabled" false .workers }}
+
+notify_appservices_from_worker: {{ $root.Release.Name }}-synapse-{{- include "element-io.synapse.process.workerTypeName" (dict "root" $root "context" "appservice") }}-0
+{{- end }}
+
+{{- with (include "element-io.synapse.appservices-config-files" (dict "root" $root "context" .)) | fromJsonArray }}
+app_service_config_files:
+{{ . | toYaml }}
+{{- end }}
+
+{{- if dig "background" "enabled" false .workers }}
+
+run_background_tasks_on: {{ $root.Release.Name }}-synapse-{{- include "element-io.synapse.process.workerTypeName" (dict "root" $root "context" "background") }}-0
+{{- end }}
+
+{{- if dig "federation-sender" "enabled" false .workers }}
+
+send_federation: false
+federation_sender_instances:
+{{- range $index := untilStep 0 ((index .workers "federation-sender").replicas | int) 1 }}
+- {{ $root.Release.Name }}-synapse-{{- include "element-io.synapse.process.workerTypeName" (dict "root" $root "context" "federation-sender") }}-{{ $index }}
+{{- end }}
+{{- else }}
+
+send_federation: true
+{{- end }}
+
+max_upload_size: "{{ .media.maxUploadSize }}"
+{{- if dig "media-repository" "enabled" false .workers }}
+media_instance_running_background_jobs: "{{ $root.Release.Name }}-synapse-{{- include "element-io.synapse.process.workerTypeName" (dict "root" $root "context" "media-repository") }}-0"
+{{- end }}
+
+{{- if dig "pusher" "enabled" false .workers }}
+
+start_pushers: false
+pusher_instances:
+{{- range $index := untilStep 0 ((index .workers "pusher").replicas | int) 1 }}
+- {{ $root.Release.Name }}-synapse-{{- include "element-io.synapse.process.workerTypeName" (dict "root" $root "context" "pusher") }}-{{ $index }}
+{{- end }}
+{{- else }}
+
+start_pushers: true
+{{- end }}
+
+{{- if dig "user-dir" "enabled" false .workers }}
+
+update_user_directory_from_worker: {{ $root.Release.Name }}-synapse-{{- include "element-io.synapse.process.workerTypeName" (dict "root" $root "context" "user-dir") }}-0
+{{- end }}
+{{- $enabledWorkers := (include "element-io.synapse.enabledWorkers" (dict "root" $root)) | fromJson }}
+
+instance_map:
+  main:
+    host: {{ $root.Release.Name }}-synapse-main.{{ $root.Release.Namespace }}.svc.{{ $root.Values.clusterDomain }}
+    port: 9093
+{{- range $workerType, $workerDetails := $enabledWorkers }}
+{{- if include "element-io.synapse.process.hasReplication" (dict "root" $root "context" $workerType) }}
+{{- $workerTypeName := include "element-io.synapse.process.workerTypeName" (dict "root" $root "context" $workerType) }}
+{{- range $index := untilStep 0 ($workerDetails.replicas | int) 1 }}
+  {{ $root.Release.Name }}-synapse-{{ $workerTypeName }}-{{ $index }}:
+    host: {{ $root.Release.Name }}-synapse-{{ $workerTypeName }}-{{ $index }}.{{ $root.Release.Name }}-synapse-{{ $workerTypeName }}.{{ $root.Release.Namespace }}.svc.{{ $root.Values.clusterDomain }}
+    port: 9093
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{- if or .redisOrValkey .redis $enabledWorkers }}
+
+redis:
+  enabled: true
+{{- if or .redisOrValkey .redis }}
+{{- with coalesce .redisOrValkey .redis }}
+  host: "{{ tpl .host $root }}"
+  port: {{ .port | default 6379 }}
+{{- if .db }}
+  dbid: {{ .db }}
+{{- end }}
+{{- if .password }}
+  password: ${SYNAPSE_REDIS_PASSWORD}
+{{- end }}
+{{- if .tls }}
+  use_tls: true
+{{- end }}
+{{- end }}
+{{- else }}
+  host: "{{ $root.Release.Name }}-valkey.{{ $root.Release.Namespace }}.svc.{{ $root.Values.clusterDomain }}"
+  dbid: 0
+{{- end }}
+{{- if include "element-io.synapse.streamWriterWorkers" (dict "root" $root) | fromJsonArray }}
+
+stream_writers:
+{{- range $workerType, $workerDetails := $enabledWorkers }}
+{{- if include "element-io.synapse.process.streamWriters" (dict "root" $root "context" $workerType) | fromJsonArray }}
+{{- $workerTypeName := include "element-io.synapse.process.workerTypeName" (dict "root" $root "context" $workerType) }}
+{{- range $stream_writer := include "element-io.synapse.process.streamWriters" (dict "root" $root "context" $workerType) | fromJsonArray }}
+  {{ $stream_writer }}:
+{{- /* Yes this is disgusting but until we have to handle either multiple workers sharing the same stream or more streams with s/main/master in them too, this is fine */}}
+{{- if eq $stream_writer "quarantined_media_changes" }}
+  - master
+{{- end }}
+{{- range $index := untilStep 0 ($workerDetails.replicas | int) 1 }}
+  - {{ $root.Release.Name }}-synapse-{{ $workerTypeName }}-{{ $index }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

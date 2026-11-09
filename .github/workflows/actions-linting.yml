@@ -1,0 +1,106 @@
+# Copyright 2025 New Vector Ltd
+# Copyright 2025-2026 Element Creations Ltd
+#
+# SPDX-License-Identifier: AGPL-3.0-only
+
+name: GitHub Actions linting
+
+on:
+  pull_request:
+  push:
+    branches:
+    - main
+    - 'maintenance/*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  action-validator:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      with:
+        persist-credentials: false
+
+    - uses: $/.github/actions/asdf-cache
+      with:
+        tool-versions: |
+          action-validator 0.6.0
+
+    - name: Lint Actions
+      run: |
+        find .github/workflows -type f \( -iname \*.yaml -o -iname \*.yml \) -print0 \
+          | xargs -0 -I {} action-validator --verbose {}
+
+  actionlint:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      with:
+        persist-credentials: false
+
+    - name: Check workflow files
+      uses: docker://rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+      with:
+        args: -color
+
+  pinned-actions:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      with:
+        persist-credentials: false
+
+    - name: Find unpinned actions
+      run: |
+        # All with digest/commit ids also need comments
+        # Find all actions that aren't docker images pinned by tag and digest or aren't GitHub commits by id
+        unpinned_actions=$(
+          find .github/workflows .github/actions -type f \( -iname \*.yaml -o -iname \*.yml \) -print0 \
+            | xargs -0 -I {} grep -E 'use[s]:' {} \
+            | grep -vE 'use[s]:\s+./.+' \
+            | grep -vE 'use[s]:\s+docker://[^@]+:[^@]+@sha256:[a-f0-9]{64}' \
+            | grep -vE 'use[s]:\s+[^#]*@[a-f0-9]{40}\s+#\sv[0-9]+\.[0-9]+\.[0-9]+' || true)
+        if [ "$unpinned_actions" != "" ]; then
+          echo "There are unpinned actions:"
+          echo "$unpinned_actions"
+          exit 1
+        fi
+
+  explicit-permissions:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      with:
+        persist-credentials: false
+
+    - name: Find workflows that have jobs that rely on the default permissions
+      run: |
+        workflows_with_implicit_permissions=$(
+          find .github/workflows -type f \( -iname \*.yaml -o -iname \*.yml \) -print0 \
+            | xargs -0 -I {} yq '{filename: ([.jobs.* | has("permissions")] | all) or (. | has("permissions"))}' {} \
+            | grep -E 'false$' || true)
+        if [ "$workflows_with_implicit_permissions" != "" ]; then
+          echo "There are workflows that have not set permissions either globally or for all jobs:"
+          echo "$workflows_with_implicit_permissions"
+          exit 1
+        fi
+
+  zizmor:
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run zizmor 🌈
+        uses: zizmorcore/zizmor-action@53290badfa369cb0bf7ad16342cb62c2fa47ac7b  # v0.8.0

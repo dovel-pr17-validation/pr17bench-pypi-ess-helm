@@ -1,0 +1,46 @@
+{{- /*
+Copyright 2024 New Vector Ltd
+Copyright 2025-2026 Element Creations Ltd
+
+SPDX-License-Identifier: AGPL-3.0-only
+*/ -}}
+
+{{- with .Values.synapse -}}
+{{- if .enabled -}}
+{{- if $.Capabilities.APIVersions.Has "monitoring.coreos.com/v1/ServiceMonitor" }}
+{{- if .serviceMonitors.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  labels:
+    {{- include "element-io.synapse.labels" (dict "root" $ "context" .) | nindent 4 }}
+  name: {{ $.Release.Name }}-synapse
+  namespace: {{ $.Release.Namespace }}
+spec:
+  endpoints:
+  - interval: 30s
+    port: synapse-metrics
+    relabelings:
+    - targetLabel: instance
+      action: replace
+      replacement: {{ include "element-io.ess-library.inboundTrafficHandler.host" (dict "root" $ "context" (dict "component" .)) }}
+    - sourceLabels: [__meta_kubernetes_pod_name]
+      targetLabel: index
+      regex: '.*-([0-9]+)'
+      replacement: '$1'
+    {{- with .serviceMonitors.relabelings }}
+      {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- with .serviceMonitors.metricRelabelings }}
+    metricRelabelings:
+      {{- toYaml . | nindent 4 }}
+    {{- end }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/part-of: matrix-stack
+      app.kubernetes.io/component: matrix-server
+      k8s.element.io/synapse-instance: {{ $.Release.Name }}-synapse
+{{- end }}
+{{- end }}
+{{- end -}}
+{{- end -}}

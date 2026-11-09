@@ -1,0 +1,310 @@
+{
+  "$id": "file://matrix-rtc",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "enabled": {
+      "type": "boolean"
+    },
+    "restrictRoomCreationToLocalUsers": {
+      "type": "boolean"
+    },
+    "livekitAuth": {
+      "type": "object",
+      "required": [
+        "key"
+      ],
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "secret": {
+          "$ref": "file://common/credential.json"
+        }
+      }
+    },
+    "appserviceRegistration": {
+      "$ref": "file://common/credential.json"
+    },
+    "user": {
+      "type": "object",
+      "properties": {
+        "localpart": {
+          "type": "string",
+          "description": "The localpart of the application service user of the MatrixRTC Authorisation Service"
+        }
+      }
+    },
+    "redisOrValkey": {
+      "$ref": "file://common/redis.json"
+    },
+    "replicas": {
+      "minimum": 0,
+      "maximum": 1,
+      "type": "integer"
+    },
+    "extraEnv": {
+      "$ref": "file://common/extraEnv.json"
+    },
+    "extraVolumes": {
+      "$ref": "file://common/extraVolumes.json"
+    },
+    "extraVolumeMounts": {
+      "$ref": "file://common/extraVolumeMounts.json"
+    },
+    "extraInitContainers": {
+      "$ref": "file://common/extraInitContainers.json"
+    },
+    "image": {
+      "$ref": "file://common/image.json"
+    },
+    "inboundTrafficHandler": {
+      "$ref": "file://common/inboundTrafficHandler.json"
+    },
+    "ingress": {
+      "$ref": "file://common/ingress.json"
+    },
+    "labels": {
+      "$ref": "file://common/labels.json"
+    },
+    "hostAliases": {
+      "$ref": "file://common/hostAliases.json"
+    },
+    "annotations": {
+      "$ref": "file://common/workloadAnnotations.json"
+    },
+    "containersSecurityContext": {
+      "$ref": "file://common/containersSecurityContext.json"
+    },
+    "dnsPolicy": {
+      "type": "string"
+    },
+    "dnsConfig": {
+      "$ref": "file://common/dnsConfig.json"
+    },
+    "serviceMonitors": {
+      "$ref": "file://common/serviceMonitors.json"
+    },
+    "nodeSelector": {
+      "$ref": "file://common/nodeSelector.json"
+    },
+    "priorityClassName": {
+      "type": "string"
+    },
+    "schedulerName": {
+      "type": "string"
+    },
+    "runtimeClassName": {
+      "type": "string"
+    },
+    "affinity": {
+      "$ref": "file://common/affinity.json"
+    },
+    "podSecurityContext": {
+      "$ref": "file://common/podSecurityContext.json"
+    },
+    "resources": {
+      "$ref": "file://common/resources.json"
+    },
+    "serviceAccount": {
+      "$ref": "file://common/serviceAccount.json"
+    },
+    "tolerations": {
+      "$ref": "file://common/tolerations.json"
+    },
+    "topologySpreadConstraints": {
+      "$ref": "file://common/topologySpreadConstraints.json"
+    },
+    "livenessProbe": {
+      "$ref": "file://common/probe.json"
+    },
+    "readinessProbe": {
+      "$ref": "file://common/probe.json"
+    },
+    "startupProbe": {
+      "$ref": "file://common/probe.json"
+    },
+    "sfu": {
+      "type": "object",
+      "if": {
+        "properties": {
+          "enabled": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "not": {
+          "required": [
+            "url"
+          ]
+        }
+      },
+      "else": {
+        "required": [
+          "url"
+        ]
+      },
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "url": {
+          "type": "string",
+          "pattern": "^wss://.*"
+        },
+        "replicas": {
+          "minimum": 0,
+          "maximum": 1,
+          "type": "integer"
+        },
+        "image": {
+          "$ref": "file://common/image.json"
+        },
+        "labels": {
+          "$ref": "file://common/labels.json"
+        },
+        "extraEnv": {
+          "$ref": "file://common/extraEnv.json"
+        },
+        "extraVolumes": {
+          "$ref": "file://common/extraVolumes.json"
+        },
+        "extraVolumeMounts": {
+          "$ref": "file://common/extraVolumeMounts.json"
+        },
+        "extraInitContainers": {
+          "$ref": "file://common/extraInitContainers.json"
+        },
+        "annotations": {
+          "$ref": "file://common/workloadAnnotations.json"
+        },
+        "hostAliases": {
+          "$ref": "file://common/hostAliases.json"
+        },
+        "hostNetwork": {
+          "type": "boolean"
+        },
+        "useStunToDiscoverPublicIP": {
+          "type": "boolean"
+        },
+        "manualIP": {
+          "type": "string"
+        },
+        "nodeIPSource": {
+          "type": "string",
+          "enum": [
+            "hostIP",
+            "podIP"
+          ]
+        },
+        "redisOrValkey": {
+          "$ref": "file://common/redis.json"
+        },
+        "redis": {
+          "$ref": "file://common/redis.json"
+        },
+        "additional": {
+          "$ref": "file://common/additional.json"
+        },
+        "logging": {
+          "type": "object",
+          "properties": {
+            "level": {
+              "type": "string",
+              "enum": [
+                "debug",
+                "info",
+                "warn",
+                "error"
+              ]
+            },
+            "pionLevel": {
+              "type": "string",
+              "enum": [
+                "debug",
+                "info",
+                "warn",
+                "error"
+              ]
+            },
+            "json": {
+              "type": "boolean"
+            }
+          }
+        },
+        "exposedServices": {
+          "type": "object",
+          "properties": {
+            "rtcTcp": {
+              "$ref": "file://common/exposedServicePort.json"
+            },
+            "rtcMuxedUdp": {
+              "$ref": "file://common/exposedServicePort.json"
+            },
+            "rtcUdp": {
+              "$ref": "file://common/exposedServicePortRange.json"
+            },
+            "turnTLS": {
+              "$ref": "file://common/exposedServicePortWithTLS.json"
+            },
+            "turn": {
+              "$ref": "file://common/exposedServicePort.json"
+            }
+          }
+        },
+        "containersSecurityContext": {
+          "$ref": "file://common/containersSecurityContext.json"
+        },
+        "dnsPolicy": {
+          "type": "string"
+        },
+        "dnsConfig": {
+          "$ref": "file://common/dnsConfig.json"
+        },
+        "nodeSelector": {
+          "$ref": "file://common/nodeSelector.json"
+        },
+        "priorityClassName": {
+          "type": "string"
+        },
+        "schedulerName": {
+          "type": "string"
+        },
+        "runtimeClassName": {
+          "type": "string"
+        },
+        "affinity": {
+          "$ref": "file://common/affinity.json"
+        },
+        "podSecurityContext": {
+          "$ref": "file://common/podSecurityContext.json"
+        },
+        "serviceMonitors": {
+          "$ref": "file://common/serviceMonitors.json"
+        },
+        "resources": {
+          "$ref": "file://common/resources.json"
+        },
+        "serviceAccount": {
+          "$ref": "file://common/serviceAccount.json"
+        },
+        "tolerations": {
+          "$ref": "file://common/tolerations.json"
+        },
+        "topologySpreadConstraints": {
+          "$ref": "file://common/topologySpreadConstraints.json"
+        },
+        "livenessProbe": {
+          "$ref": "file://common/probe.json"
+        },
+        "readinessProbe": {
+          "$ref": "file://common/probe.json"
+        },
+        "startupProbe": {
+          "$ref": "file://common/probe.json"
+        }
+      }
+    }
+  }
+}

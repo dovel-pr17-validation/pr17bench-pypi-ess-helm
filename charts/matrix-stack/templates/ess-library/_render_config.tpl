@@ -1,0 +1,128 @@
+{{- /*
+Copyright 2025 New Vector Ltd
+Copyright 2025-2026 Element Creations Ltd
+
+SPDX-License-Identifier: AGPL-3.0-only
+*/ -}}
+
+{{- define "element-io.ess-library.render-config-container" -}}
+{{- $root := .root -}}
+{{- with required "element-io.ess-library.render-config-container missing context" .context -}}
+{{- $context := . -}}
+{{- $nameSuffix := required "element-io.ess-library.render-config-container missing context.nameSuffix" .nameSuffix -}}
+{{- $containerName := required "element-io.ess-library.render-config-container missing context.containerName" .containerName -}}
+{{- $isHook := .isHook -}}
+{{- $extraVolumeMounts := .extraVolumeMounts -}}
+{{- $templatesVolume := (.templatesVolume | default "plain-config") -}}
+{{- $additionalPath := .additionalPath -}}
+{{- $additionalProperty := dict -}}
+{{- if $additionalPath }}
+{{- $additionalProperty = include "element-io.ess-library.value-from-values-path" (dict "root" $root "context" $additionalPath) | fromJson -}}
+{{- end -}}
+{{- $outputFile := required "element-io.ess-library.render-config-container missing context.outputFile" .outputFile -}}
+{{- $underrides := .underrides | default list -}}
+{{- $underridesSecrets := .underridesSecrets | default list -}}
+{{- $overrides := required "element-io.ess-library.render-config-container missing context.overrides" .overrides -}}
+- name: {{ $containerName }}
+  {{- include "element-io.ess-library.pods.image" (dict "root" $root "context" $root.Values.matrixTools.image) | nindent 2 }}
+{{- with .containersSecurityContext }}
+  securityContext:
+    {{- toYaml . | nindent 4 }}
+{{- end }}
+  args:
+  - render-config
+{{- with .arrayOverwriteKeys }}
+  - -array-overwrite-keys
+  - {{ . }}
+{{- end }}
+  - -output
+  - /conf/{{ $outputFile }}
+    {{- range $underrides }}
+  - /config-templates/{{ . }}
+    {{- end }}
+    {{- range $underridesSecrets }}
+  - /secrets/{{ tpl .configSecret $root }}/{{ .configSecretKey }}
+    {{- end }}
+    {{- range $key := ($additionalProperty | keys | uniq | sortAlpha) -}}
+    {{- $prop := index $additionalProperty $key }}
+    {{- if $prop.config }}
+  - /secrets/{{ include (printf "element-io.%s.secret-name" $nameSuffix) (dict "root" $root "context" $context) }}/user-{{ $key }}
+    {{- end }}
+    {{- if $prop.configSecret }}
+  - /secrets/{{ tpl $prop.configSecret $root }}/{{ $prop.configSecretKey }}
+    {{- end }}
+    {{- end }}
+    {{- range $overrides }}
+  - /config-templates/{{ . }}
+    {{- end }}
+  {{- include "element-io.ess-library.pods.env" (dict "root" $root "context" (dict "componentValues" . "componentName" $nameSuffix "overrideEnvSuffix" "renderConfigOverrideEnv")) | nindent 2 }}
+{{- with $root.Values.matrixTools.resources.renderConfig }}
+  resources:
+    {{- toYaml . | nindent 4 }}
+{{- end }}
+  volumeMounts:
+  - mountPath: /config-templates
+    name: {{ $templatesVolume }}
+    readOnly: true
+{{- range $secret := include (printf "element-io.%s.configSecrets" $nameSuffix) (dict "root" $root "context" .) | fromJsonArray }}
+{{- with (tpl $secret $root) }}
+  - mountPath: /secrets/{{ . }}
+    name: "secret-{{ . | sha256sum | trunc 12 }}"
+    readOnly: true
+{{- end }}
+{{- end }}
+  - mountPath: /conf
+    name: rendered-config
+    readOnly: false
+{{- range $extraVolumeMounts }}
+{{- if or (and $isHook ((list "hook" "both") | has (.mountContext | default "both")))
+          (and (not $isHook) ((list "runtime" "both") | has (.mountContext | default "both"))) -}}
+{{- $extraVolumeMount := . | deepCopy }}
+{{- $_ := unset $extraVolumeMount "mountContext" }}
+  - {{- ($extraVolumeMount | toYaml) | nindent 4 }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+
+{{- define "element-io.ess-library.render-config-volumes" -}}
+{{- $root := .root -}}
+{{- with required "element-io.ess-library.render-config-volumes missing context" .context -}}
+{{- $nameSuffix := required "element-io.ess-library.render-config-volumes missing context.nameSuffix" .nameSuffix -}}
+- configMap:
+    defaultMode: 288
+    name: {{ include (printf "element-io.%s.configmap-name" $nameSuffix) (dict "root" $root "context" .) }}
+  name: plain-config
+{{- range $secret := include (printf "element-io.%s.configSecrets" $nameSuffix) (dict "root" $root "context" .) | fromJsonArray }}
+{{- with (tpl $secret $root) }}
+- secret:
+    defaultMode: 288
+    secretName: {{ . }}
+  name: secret-{{ . | sha256sum | trunc 12  }}
+{{- end }}
+{{- end }}
+- emptyDir: {{- $root.Values.matrixTools.ephemeralStorages.renderedConfig | toYaml | nindent 4 }}
+  name: rendered-config
+{{- end -}}
+{{- end -}}
+
+
+{{- define "element-io.ess-library.render-config-volume-mounts" -}}
+{{- $root := .root -}}
+{{- with required "element-io.ess-library.render-config-volume-mounts context" .context -}}
+{{- $nameSuffix := required "element-io.ess-library.render-config-volume-mounts context.nameSuffix" .nameSuffix -}}
+{{- $outputFile := required "element-io.ess-library.render-config-volume-mounts context.outputFile" .outputFile -}}
+- mountPath: "/conf/{{ $outputFile }}"
+  name: rendered-config
+  subPath: {{ $outputFile }}
+  readOnly: true
+{{- range $secret := include (printf "element-io.%s.configSecrets" $nameSuffix) (dict "root" $root "context" .) | fromJsonArray }}
+{{- with (tpl $secret $root) }}
+- mountPath: /secrets/{{ . }}
+  name: "secret-{{ . | sha256sum | trunc 12 }}"
+  readOnly: true
+{{- end }}
+{{- end }}
+{{- end -}}
+{{- end -}}

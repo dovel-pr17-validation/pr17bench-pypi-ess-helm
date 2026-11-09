@@ -1,0 +1,367 @@
+# Copyright 2024-2025 New Vector Ltd
+# Copyright 2025-2026 Element Creations Ltd
+#
+# SPDX-License-Identifier: AGPL-3.0-only
+
+name: Run PyTest tests - Integration
+
+on:
+  pull_request:
+  push:
+    branches:
+    - main
+    - 'maintenance/*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+  DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+  GHCR_USERNAME: ${{ github.actor }}
+  GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  K3D_EXTRA_OPTIONS: "--no-rollback"
+
+jobs:
+  pytest-setup:
+    runs-on: ubuntu-latest
+    outputs:
+      envFiles: ${{ steps.data.outputs.envFiles }}
+      upgradeFrom: ${{ steps.data.outputs.upgradeFrom }}
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      with:
+        persist-credentials: false
+        fetch-depth: 0
+        fetch-tags: true
+
+    - name: Find the changed files
+      id: changes
+      env:
+        GITHUB_EVENT_NAME: ${{ github.event_name }}
+        BASE_REF: ${{ github.event.pull_request.base.ref }}
+      run: |
+        set -euo pipefail
+
+        if [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then
+          # We can only compare against a base branch for pull requests.
+          # runAll makes every test suite run.
+          echo "runAll=true" | tee -a "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        # actions/checkout only leaves remote tracking branches, so the base
+        # branch is only reachable through its full ref.
+        base_ref_path="refs/remotes/origin/$BASE_REF"
+        changed_files=$(git diff --name-only "$base_ref_path" -- tests/integration/ charts/ .python-version uv.lock .github/workflows/pytest-integration.yml matrix-tools/)
+        non_env_files=$(grep -v -e '^tests/integration/env$' <<< "$changed_files")
+
+        run_all="false"
+        # A python file of the integration tests can be used by any test suite.
+        # ess-library is used by every component. When one of them changed,
+        # every test suite must run. In the patterns, . also matches the / of
+        # a path.
+        if grep -Eq -e '^tests/integration/' \
+                    -e '^charts/[^/]*/templates/ess-library/' \
+                    -e '^(.python-version|uv.lock)$' \
+                    -e '^\.github/workflows/pytest-integration.yml' \
+                    -e '^matrix-tools/' \
+                  <<< "$non_env_files"; then
+          run_all="true"
+        fi
+
+        echo "runAll=$run_all" | tee -a "$GITHUB_OUTPUT"
+
+    - name: Install dyff
+      if: ${{ github.event_name == 'pull_request' && steps.changes.outputs.runAll == 'false' }}
+      uses: ./.github/actions/asdf-cache   # zizmor: ignore[self-repository]  The $/ form is better, but actionlint rejects it for now. https://github.com/rhysd/actionlint/issues/760
+      with:
+        tool-versions: |
+          # renovate: datasource=github-releases depName=dyff packageName=homeport/dyff
+          dyff 1.12.0
+
+    - name: Checkout the base branch
+      if: ${{ github.event_name == 'pull_request' && steps.changes.outputs.runAll == 'false' }}
+      env:
+        BASE_REF: ${{ github.event.pull_request.base.ref }}
+      run: git worktree add --detach "$RUNNER_TEMP/base-tree" "refs/remotes/origin/$BASE_REF"
+
+    - name: Render the CI manifests of the PR
+      if: ${{ github.event_name == 'pull_request' && steps.changes.outputs.runAll == 'false' }}
+      run: scripts/render_ci_manifests.sh charts/matrix-stack "$RUNNER_TEMP/new" 'pytest-*-values.yaml'
+
+    - name: Render the CI manifests of the base
+      if: ${{ github.event_name == 'pull_request' && steps.changes.outputs.runAll == 'false' }}
+      run: scripts/render_ci_manifests.sh "$RUNNER_TEMP/base-tree/charts/matrix-stack" "$RUNNER_TEMP/old" 'pytest-*-values.yaml'
+
+    - name: Find the values files with a dyff
+      if: ${{ github.event_name == 'pull_request' && steps.changes.outputs.runAll == 'false' }}
+      run: |
+        set -euo pipefail
+
+        scripts/dyff_all_ci_values_files_manifests.sh list \
+          "$RUNNER_TEMP/old" "$RUNNER_TEMP/new" \
+          > "$RUNNER_TEMP/changed_values_files"
+
+    - id: data
+      env:
+        RUN_ALL: ${{ steps.changes.outputs.runAll }}
+      run: |
+        set -euo pipefail
+
+        if [ "$RUN_ALL" == "true" ]; then
+          # Every test suite runs: this is not a pull request against a base
+          # branch, an integration test file or ess-library changed.
+          env_files=$(find tests/integration/env -name '*.rc' | sed 's|tests/integration/env/||' | sed 's/.rc$//')
+        else
+          # The integration tests run against the "pytest-" prefixed values
+          # files. A test suite runs when its values file has a dyff. The name
+          # of the test suite is not always the name of its values file, e.g.
+          # pytest-well-known-values.yaml belongs to well-known-delegation.
+          changed_pytest_values=$(cat "$RUNNER_TEMP/changed_values_files")
+          env_files=""
+          for rc_file in tests/integration/env/*.rc; do
+            test_suite=$(basename "$rc_file" .rc)
+            values_name=$(basename "$(sed -n 's|^TEST_VALUES_FILE=||p' "$rc_file")" .yaml)
+            if grep -Fxq "$values_name" <<< "$changed_pytest_values"; then
+              env_files+="$test_suite"$'\n'
+            fi
+          done
+        fi
+
+        echo "envFiles=$(printf '%s' "$env_files" | jq -ncR '{envFiles: [inputs]}')" | tee -a "$GITHUB_OUTPUT"
+        LATEST_TAG=$(git describe --abbrev=0 --tags --match '[0-9]*.[0-9]*.[0-9]*')
+        echo "upgradeFrom=$LATEST_TAG" | tee -a "$GITHUB_OUTPUT"
+
+  playwright-image:
+    runs-on: ubuntu-latest
+    # Build the playwright browser image and publish it to the registry. The integration
+    # tests use this image. fixtures/playwright.py computes its name and tag from the
+    # playwright version and the hash of the Dockerfile. A test run then downloads the image
+    # built from exactly its dependencies. Docker only uploads the parts that are not in the
+    # registry already.
+    # Pull requests from forks are skipped: their token is read-only, it cannot push to the
+    # registry.
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'element-hq/ess-helm' }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      with:
+        persist-credentials: false
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+      with:
+        # No cache. This job builds an image that other CI runs download. A bad cache must
+        # not break that image.
+        enable-cache: false
+        activate-environment: true
+
+    - name: Set up UV environment
+      run: uv sync --group browser
+
+    - name: Compute the image reference
+      # The tests and this job compute the image name and tag with the same function. The
+      # tests then download the image this job publishes
+      id: compute
+      run: |
+        echo "image=$(python -c 'from integration.fixtures.playwright import image_reference; print(image_reference())')" | tee -a "$GITHUB_OUTPUT"
+        echo "playwright-version=$(python -c 'from importlib.metadata import version; print(version("playwright"))')" | tee -a "$GITHUB_OUTPUT"
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
+
+    - name: Login to GitHub Container Registry
+      uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6  # v4.7.0
+      with:
+        registry: ghcr.io
+        username: ${{ env.GHCR_USERNAME }}
+        password: ${{ env.GHCR_TOKEN }}
+
+    - name: Build and push the image
+      uses: docker/bake-action@59cb1203cd42bcefd40a1b6d73b589e48c86040e  # v7.5.0
+      with:
+        push: true
+        files: docker-bake.hcl
+        targets: playwright-browser
+        set: |
+          *.tags=${{ steps.compute.outputs.image }}
+          *.args.PLAYWRIGHT_VERSION=${{ steps.compute.outputs.playwright-version }}
+
+  matrix-tools-image:
+    # Build the matrix-tools image and publish it to the registry. The integration tests
+    # deploy this image: fixtures/matrix_tools.py reads its reference from the
+    # MATRIX_TOOLS_IMAGE environment variable. This way the tests run the image built from
+    # exactly the code under test, instead of the last released one.
+    # The build steps live in a reusable workflow, shared with the matrix-tools workflow.
+    # Pull requests from forks cannot push: their token is read-only. The image is still
+    # built, so the build itself is tested. The tests then run with the released image.
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/matrix-tools-build.yml  # zizmor: ignore[self-repository]  The $/ form is better, but actionlint rejects it for now. https://github.com/rhysd/actionlint/issues/760
+    with:
+      push: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'element-hq/ess-helm' }}
+
+  pytest-integration:
+    runs-on: ubuntu-latest
+    needs:
+    - pytest-setup
+    - matrix-tools-image
+    if: ${{ needs.pytest-setup.outputs.envFiles != '{"envFiles":[]}' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        test-component: ${{ fromJSON(needs.pytest-setup.outputs.envFiles).envFiles }}
+        test-from-ref:
+        - "${{ github.event.pull_request.head.sha }}"
+        - "${{ needs.pytest-setup.outputs.upgradeFrom }}"
+    env:
+      MATRIX_TEST_COMPONENT: ${{ matrix.test-component }}
+      MATRIX_TEST_FROM_REF: ${{ matrix.test-from-ref }}
+      # The matrix-tools image built by the matrix-tools-image job. Empty when the image
+      # was not pushed: the tests then use the image from the chart values. The digest
+      # pins the image: a tag is mutable, another workflow run can push the same tag
+      # with a different image.
+      MATRIX_TOOLS_IMAGE: ${{ needs.matrix-tools-image.outputs.image }}
+      MATRIX_TOOLS_DIGEST: ${{ needs.matrix-tools-image.outputs.digest }}
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      with:
+        persist-credentials: false
+        fetch-depth: 0
+        fetch-tags: true
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+      with:
+        enable-cache: true
+        activate-environment: true
+
+    - name: Set up UV environment
+      run: |
+        uv sync
+        scripts/setup_playwright_controller.sh
+
+    - name: Get current week number and home dir
+      id: cache-input
+      run: |
+        echo "week=$(date +%Y%U)" | tee -a "$GITHUB_OUTPUT"
+        echo "runner-home=$HOME" | tee -a "$GITHUB_OUTPUT"
+
+    - name: Restore pyhelm cache
+      id: cache-pyhelm
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      with:
+        path: .pyhelm_cache
+        key: pyhelm-integration-cache-${{ hashFiles('tests/integration/fixtures/cluster.py') }}-week-${{ steps.cache-input.outputs.week }}
+        restore-keys: |
+          pyhelm-integration-cache-
+
+    - name: List pyhelm cache contents
+      run: |
+        echo "Listing contents of .pyhelm_cache:"
+        echo "GITHUB_WORKSPACE is $GITHUB_WORKSPACE, pwd is $(pwd)"
+        ls -la .pyhelm_cache || echo "Cache directory does not exist or is empty"
+
+    - name: Login to Dockerhub
+      uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6  # v4.7.0
+      if: ${{ github.event.pull_request.head.repo.full_name == 'element-hq/ess-helm' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+      with:
+        registry: docker.io
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+    - name: Login to GitHub Container Registry
+      uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6  # v4.7.0
+      if: ${{ github.event.pull_request.head.repo.full_name == 'element-hq/ess-helm' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+      with:
+        registry: ghcr.io
+        username: ${{ env.GHCR_USERNAME }}
+        password: ${{ env.GHCR_TOKEN }}
+
+    - uses: $/.github/actions/asdf-cache
+      with:
+        # The comment inside tool-versions is used by Renovate to update the k3d version.
+        # asdf supports comments in .tool-versions files.
+        tool-versions: |
+          # renovate: datasource=github-releases depName=k3d packageName=k3d-io/k3d
+          k3d 5.9.0
+
+    - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310  # v5.0.1
+
+    - name: Checkout values files from previous ref
+      run: |
+        git checkout --no-overlay -f "${MATRIX_TEST_FROM_REF}" -- charts/matrix-stack tests/integration/env/
+      if: ${{ matrix.test-from-ref != github.event.pull_request.head.sha }}
+
+    - name: Deploy with pytest once
+      env:
+        PYTEST_CI_FIRST_STEP: "1"
+        # On the initial setup, the ingress controller does not know the backends yet.
+        # It can return 500 and 503 until it has picked them up. Once the setup is done,
+        # the preStop sleep and the HAProxy grace period keep the workloads present.
+        PYTEST_EXPECTED_HTTP_STATUS_CODES: "500,503"
+      run: |
+        if [ -f "tests/integration/env/${MATRIX_TEST_COMPONENT}.rc" ]; then
+          # shellcheck source=/dev/null
+          . "tests/integration/env/${MATRIX_TEST_COMPONENT}.rc"
+          pytest-ess --test-suite "${MATRIX_TEST_COMPONENT}" --keep -- -vv
+        else
+          echo "The integration test does not exist in previous ref, skipping..."
+        fi
+      # syn2mas is a special case that cannot run twice by design
+      if: ${{ matrix.test-component != 'matrix-authentication-service-syn2mas' }}
+
+    - name: Checkout values files back
+      run: |
+        git checkout --no-overlay -f HEAD -- charts/matrix-stack tests/integration/env/
+
+    - name: On upgrade, Synapse can restart, expect 429 to occur
+      run: |
+        codes="429"
+        # 26.10.0 is the last version without a preStop sleep on its pods.
+        # When upgrading from it, the old pods stop without a delay and the
+        # server can return 502 and 504 errors while the rollout happens.
+        if [ "${MATRIX_TEST_FROM_REF}" = "26.10.1" ]; then
+          codes="$codes,500,502,503,504"
+        fi
+        echo "PYTEST_EXPECTED_HTTP_STATUS_CODES=$codes" >> "$GITHUB_ENV"
+      if: ${{ matrix.test-from-ref != github.event.pull_request.head.sha }}
+
+    - name: Test with pytest (upgrade or idempotent setup)
+      env:
+        PYTEST_CI_SECOND_STEP: "1"
+      run: |
+        # shellcheck source=/dev/null
+        . "tests/integration/env/${MATRIX_TEST_COMPONENT}.rc"
+        pytest-ess --test-suite "${MATRIX_TEST_COMPONENT}" --keep -- -vv
+
+    - name: Save pyhelm cache
+      if: always() && steps.cache-pyhelm.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      with:
+        key: pyhelm-integration-cache-${{ hashFiles('tests/integration/fixtures/cluster.py') }}-week-${{ steps.cache-input.outputs.week }}
+        path: .pyhelm_cache
+
+    - name: Export logs
+      if: ${{ !cancelled() }}
+      shell: bash
+      run: |
+        collect-ess-logs --system-logs
+
+    - name: Upload logs
+      if: ${{ !cancelled() }}
+      timeout-minutes: 5
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+      with:
+        name: ess-helm-logs-${{ matrix.test-component }}-${{ matrix.test-from-ref }}
+        path: ess-helm-logs
+        retention-days: 3

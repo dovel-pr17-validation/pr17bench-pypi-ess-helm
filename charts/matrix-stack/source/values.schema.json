@@ -1,0 +1,200 @@
+{
+  "$id": "file://matrix-stack/",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "global": {
+      "$ref": "file://common/global.json"
+    },
+    "serverName": {
+      "type": "string"
+    },
+    "labels": {
+      "$ref": "file://common/labels.json"
+    },
+    "certManager": {
+      "type": "object",
+      "properties": {
+        "clusterIssuer": {
+          "type": "string"
+        },
+        "issuer": {
+          "type": "string"
+        }
+      },
+      "maxProperties": 1,
+      "anyOf": [
+        {
+          "required": [
+            "clusterIssuer"
+          ]
+        },
+        {
+          "required": [
+            "issuer"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "clusterIssuer",
+              "issuer"
+            ]
+          }
+        }
+      ]
+    },
+    "matrixTools": {
+      "type": "object",
+      "properties": {
+        "image": {
+          "$ref": "file://common/image.json"
+        },
+        "ephemeralStorages": {
+          "type": "object",
+          "properties": {
+            "renderedConfig": {
+              "$ref": "file://common/ephemeralStorage.json"
+            }
+          }
+        },
+        "resources": {
+          "type": "object",
+          "properties": {
+            "renderConfig": {
+              "$ref": "file://common/resources.json"
+            },
+            "tcpWait": {
+              "$ref": "file://common/resources.json"
+            }
+          }
+        }
+      }
+    },
+    "image": {
+      "type": "object",
+      "properties": {
+        "pullPolicy": {
+          "type": "string",
+          "enum": [
+            "Always",
+            "IfNotPresent",
+            "Never"
+          ]
+        },
+        "pullSecrets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "inboundTrafficHandler": {
+      "$ref": "file://common/inboundTrafficHandler.json"
+    },
+    "ingress": {
+      "$ref": "file://common/ingress_global.json"
+    },
+    "storage": {
+      "$ref": "file://common/storage_global.json"
+    },
+    "nodeSelector": {
+      "$ref": "file://common/nodeSelector.json"
+    },
+    "tolerations": {
+      "$ref": "file://common/tolerations.json"
+    },
+    "topologySpreadConstraints": {
+      "$ref": "file://common/topologySpreadConstraints.json"
+    },
+    "priorityClassName": {
+      "type": "string"
+    },
+    "schedulerName": {
+      "type": "string"
+    },
+    "runtimeClassName": {
+      "type": "string"
+    },
+    "affinity": {
+      "$ref": "file://common/affinity.json"
+    },
+    "clusterDomain": {
+      "type": "string"
+    },
+    "networking": {
+      "type": "object",
+      "properties": {
+        "ipFamily": {
+          "type": "string",
+          "enum": [
+            "ipv4",
+            "ipv6",
+            "dual-stack"
+          ]
+        }
+      }
+    },
+    "extraObjects": {
+      "type": "object",
+      "additionalProperties": {
+        "oneOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "deploymentMarkers": {
+      "$ref": "file://deployment-markers.json"
+    },
+    "initSecrets": {
+      "$ref": "file://init-secrets.json"
+    },
+    "matrixRTC": {
+      "$ref": "file://matrix-rtc.json"
+    },
+    "elementAdmin": {
+      "$ref": "file://element-admin.json"
+    },
+    "elementWeb": {
+      "$ref": "file://element-web.json"
+    },
+    "haproxy": {
+      "$ref": "file://haproxy.json"
+    },
+    "hookshot": {
+      "$ref": "file://hookshot.json"
+    },
+    "matrixAuthenticationService": {
+      "$ref": "file://matrixAuthenticationService.json"
+    },
+    "postgres": {
+      "$ref": "file://postgres.json"
+    },
+    "valkey": {
+      "$ref": "file://valkey.json"
+    },
+    "redis": {
+      "$ref": "file://redis.json"
+    },
+    "synapse": {
+      "$ref": "file://synapse.json"
+    },
+    "wellKnownDelegation": {
+      "$ref": "file://wellKnownDelegation.json"
+    }
+  }
+}

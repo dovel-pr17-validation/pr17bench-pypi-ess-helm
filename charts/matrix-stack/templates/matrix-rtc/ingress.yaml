@@ -1,0 +1,23 @@
+{{- /*
+Copyright 2024-2025 New Vector Ltd
+Copyright 2025-2026 Element Creations Ltd
+
+SPDX-License-Identifier: AGPL-3.0-only
+*/ -}}
+{{- with .Values.matrixRTC -}}
+{{- $extraAnnotations := dict -}}
+{{- if .sfu.enabled -}}
+{{- if eq "ingress-nginx" (include "element-io.ess-library.ingress-controller-type" (dict "root" $ "context" .ingress.controllerType)) -}}
+{{- $_ := set $extraAnnotations "nginx.ingress.kubernetes.io/proxy-send-timeout" "120" -}}
+{{- $_ := set $extraAnnotations "nginx.ingress.kubernetes.io/proxy-read-timeout" "120" -}}
+{{- $_ := set $extraAnnotations "nginx.ingress.kubernetes.io/proxy-buffering" "off" -}}
+{{- end -}}
+{{- end -}}
+{{- include "element-io.ess-library.inboundTrafficHandler.ingress" (dict "root" $ "context" (dict
+  "component" .
+  "componentName" "matrix-rtc"
+  "ingressName" "matrix-rtc"
+  "extraAnnotations" $extraAnnotations
+  "labels" (include "element-io.matrix-rtc-ingress.labels" (dict "root" $ "context" .))
+)) }}
+{{- end -}}

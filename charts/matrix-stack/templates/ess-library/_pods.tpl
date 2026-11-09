@@ -1,0 +1,267 @@
+{{- /*
+Copyright 2024-2025 New Vector Ltd
+Copyright 2025-2026 Element Creations Ltd
+
+SPDX-License-Identifier: AGPL-3.0-only
+*/ -}}
+
+{{- define "element-io.ess-library.pods.commonSpec" -}}
+{{- $root := .root -}}
+{{- with required "element-io.ess-library.pods.commonSpec missing context" .context -}}
+{{- $instanceSuffix := required "element-io.ess-library.pods.commonSpec missing context.instanceSuffix" .instanceSuffix -}}
+{{- $serviceAccountNameSuffix := .serviceAccountNameSuffix | default .instanceSuffix -}}
+{{- $usesMatrixTools := .usesMatrixTools | default false -}}
+{{- $makesOutboundRequests := .makesOutboundRequests | default false -}}
+{{- $mountServiceAccountToken := .mountServiceAccountToken | default false -}}
+{{- $kind := required "element-io.ess-library.pods.commonSpec missing context.kind" .kind -}}
+{{- if not (has $kind (list "Deployment" "StatefulSet" "Job")) -}}
+{{- fail (printf "element-io.ess-library.pods.commonSpec for instanceSuffix=%s received unexpected kind=%s" $instanceSuffix $kind) -}}
+{{- end -}}
+{{- with required "element-io.ess-library.pods.commonSpec missing context.componentValues" .componentValues -}}
+automountServiceAccountToken: {{ $mountServiceAccountToken }}
+serviceAccountName: {{ include "element-io.ess-library.serviceAccountName" (dict "root" $root "context" (dict "serviceAccount" .serviceAccount "nameSuffix" $serviceAccountNameSuffix)) }}
+{{- include "element-io.ess-library.pods.pullSecrets" (dict "root" $root "context" (dict "pullSecrets" ((.image).pullSecrets | default list) "usesMatrixTools" $usesMatrixTools)) }}
+{{- if $makesOutboundRequests }}
+{{- with (tpl .dnsPolicy $root) }}
+dnsPolicy: {{ . }}
+{{- end }}
+{{- with .dnsConfig }}
+dnsConfig:
+  {{- tpl (toYaml . | nindent 2) $root }}
+{{- end }}
+{{- with .hostAliases }}
+hostAliases:
+  {{- tpl (toYaml . | nindent 2) $root }}
+{{- end }}
+{{- end }}
+{{- with .podSecurityContext }}
+securityContext:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- with (coalesce .nodeSelector $root.Values.nodeSelector) }}
+nodeSelector:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- with (coalesce .priorityClassName $root.Values.priorityClassName) }}
+priorityClassName: {{ . }}
+{{- end }}
+{{- with (coalesce .schedulerName $root.Values.schedulerName) }}
+schedulerName: {{ . }}
+{{- end }}
+{{- with (coalesce .runtimeClassName $root.Values.runtimeClassName) }}
+runtimeClassName: {{ . }}
+{{- end }}
+{{- include "element-io.ess-library.pods.affinity" (dict "root" $root "context" (dict "affinity" .affinity)) }}
+restartPolicy: {{ (eq $kind "Job") | ternary "Never" "Always" }}
+{{- include "element-io.ess-library.pods.tolerations" (dict "root" $root "context" .tolerations) }}
+{{- include "element-io.ess-library.pods.topologySpreadConstraints" (dict "root" $root "context" (dict "instanceSuffix" $instanceSuffix "deployment" (eq $kind "Deployment") "topologySpreadConstraints" .topologySpreadConstraints)) }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{- define "element-io.ess-library.pods.image" -}}
+{{- $root := .root -}}
+{{- with required "element-io.ess-library.pods.image missing context" .context -}}
+{{- if .digest }}
+image: "{{ .registry }}/{{ .repository }}@{{ .digest }}"
+imagePullPolicy: {{ coalesce .pullPolicy  $root.Values.image.pullPolicy "IfNotPresent" }}
+{{- else }}
+image: "{{ .registry }}/{{ .repository }}:{{ .tag }}"
+imagePullPolicy: {{ coalesce .pullPolicy  $root.Values.image.pullPolicy "Always" }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{- define "element-io.ess-library.pods.pullSecrets" -}}
+{{- $root := .root -}}
+{{- with required "element-io.ess-library.pods.pullSecrets missing context" .context -}}
+{{- $pullSecrets := list }}
+{{- $pullSecrets = concat .pullSecrets $root.Values.image.pullSecrets }}
+{{- if .usesMatrixTools -}}
+{{- $pullSecrets = concat $pullSecrets $root.Values.matrixTools.image.pullSecrets }}
+{{- end }}
+{{- with ($pullSecrets | uniq) }}
+imagePullSecrets:
+{{ tpl (toYaml .) $root }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{- define "element-io.ess-library.pods.tolerations" -}}
+{{- $root := .root -}}
+{{- if not (hasKey . "context") -}}
+{{- fail "element-io.ess-library.pods.tolerations missing context" -}}
+{{- end }}
+{{- $tolerations := concat .context $root.Values.tolerations }}
+{{- with ($tolerations | uniq) }}
+tolerations:
+{{ toYaml . }}
+{{- end }}
+{{- end }}
+
+{{- define "element-io.ess-library.pods.topologySpreadConstraints" -}}
+{{- $root := .root -}}
+{{- with required "element-io.ess-library.pods.topologySpreadConstraints missing context" .context -}}
+{{- $labelSelector := (dict "matchLabels" (dict "app.kubernetes.io/instance" (printf "%s-%s" $root.Release.Name .instanceSuffix))) }}
+{{- $matchLabelKeys := .deployment | ternary (list "pod-template-hash") list }}
+{{- $defaultConstraintSettings := dict "labelSelector" $labelSelector "matchLabelKeys" $matchLabelKeys "whenUnsatisfiable" "DoNotSchedule" }}
+{{- $topologySpreadConstraints := list -}}
+{{- range $constraint := coalesce .topologySpreadConstraints $root.Values.topologySpreadConstraints -}}
+{{- $constraintWithDefault := (mustMergeOverwrite (deepCopy $defaultConstraintSettings) $constraint) -}}
+{{- $defaultMatchLabels := $constraintWithDefault.labelSelector.matchLabels | deepCopy -}}
+{{- range $key, $value := $constraintWithDefault.labelSelector.matchLabels -}}
+{{- if eq $value nil -}}
+{{- $defaultMatchLabels = (omit $defaultMatchLabels $key) -}}
+{{- end -}}
+{{- end -}}
+{{- $_ := set $constraintWithDefault.labelSelector "matchLabels" $defaultMatchLabels -}}
+{{- $topologySpreadConstraints = append $topologySpreadConstraints $constraintWithDefault -}}
+{{- end }}
+{{- with $topologySpreadConstraints }}
+topologySpreadConstraints:
+{{ toYaml . }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{- define "element-io.ess-library.pods.affinity" -}}
+{{- $root := .root -}}
+{{- with required "element-io.ess-library.pods.affinity missing context" .context -}}
+{{- $componentAffinity := .affinity | default dict -}}
+{{- $globalAffinity := $root.Values.affinity | default dict -}}
+{{- $affinity := dict -}}
+{{- /*
+Each affinity type is resolved independently so that setting one type at a component level does not drop
+the other types inherited from the global affinity. A component that sets an affinity type overrides only
+that type; setting it to an empty value ({} or null) blanks out the inherited global value for that type.
+*/ -}}
+{{- range $affinityType := (list "nodeAffinity" "podAffinity" "podAntiAffinity") -}}
+{{- if hasKey $componentAffinity $affinityType -}}
+{{- with (get $componentAffinity $affinityType) -}}
+{{- $_ := set $affinity $affinityType . -}}
+{{- end -}}
+{{- else -}}
+{{- with (get $globalAffinity $affinityType) -}}
+{{- $_ := set $affinity $affinityType . -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- with $affinity }}
+affinity:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- end -}}
+{{- end -}}
+
+{{- /*
+The only differences this has over (. | toYaml) are that
+* it allows us to omit nullable values for individual properties
+* it renders nothing rather than {} when no properties are specified.
+*/ -}}
+{{- define "element-io.ess-library.pods.probe" -}}
+{{- with .failureThreshold }}
+failureThreshold: {{ . }}
+{{- end }}
+{{- with .initialDelaySeconds }}
+initialDelaySeconds: {{ . }}
+{{- end }}
+{{- with .periodSeconds }}
+periodSeconds: {{ . }}
+{{- end }}
+{{- with .successThreshold }}
+successThreshold: {{ . }}
+{{- end }}
+{{- with .timeoutSeconds }}
+timeoutSeconds: {{ . }}
+{{- end }}
+{{- end }}
+
+{{- define "element-io.ess-library.pods.env" -}}
+{{- $root := .root -}}
+{{- with required "element-io.ess-library.pods.env missing context" .context -}}
+{{- $componentValues := required "element-io.ess-library.pods.env missing context.componentValues" .componentValues -}}
+{{- $resultEnv := dict -}}
+{{- range $envEntry := $componentValues.extraEnv -}}
+{{- $_ := set $resultEnv $envEntry.name $envEntry -}}
+{{- end -}}
+{{- $componentName := required "element-io.ess-library.pods.env missing context.componentName" .componentName -}}
+{{- $overrideEnvType := .overrideEnvSuffix | default "overrideEnv" -}}
+{{- $overrideEnvDocument := include (printf "element-io.%s.%s" $componentName $overrideEnvType) (dict "root" $root "context" $componentValues) -}}
+{{- $overrideEnvYaml := $overrideEnvDocument | fromYaml -}}
+{{- range $envEntry := $overrideEnvYaml.env -}}
+{{- $_ := set $resultEnv $envEntry.name $envEntry -}}
+{{- end -}}
+{{- with $resultEnv }}
+env:
+{{- range $key, $fullEnvEntry := . }}
+- {{ $fullEnvEntry | toYaml | indent 2 | trim }}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{- /*
+Renders an init container, based on the matrix-tools image, that waits until a TCP endpoint
+accepts connections. The address must be a "host:port" string. The context requires
+"name" and "address", and accepts "containersSecurityContext" and "extraVolumeMounts".
+The output is indented for a container list and must be indented by the caller.
+*/ -}}
+{{- define "element-io.ess-library.pods.tcpWait" -}}
+{{- $root := .root -}}
+{{- with required "element-io.ess-library.pods.tcpWait missing context" .context -}}
+{{- $name := required "element-io.ess-library.pods.tcpWait missing context.name" .name -}}
+{{- $address := required "element-io.ess-library.pods.tcpWait missing context.address" .address -}}
+- name: {{ $name }}
+  {{- include "element-io.ess-library.pods.image" (dict "root" $root "context" $root.Values.matrixTools.image) | nindent 2 }}
+{{- with .containersSecurityContext }}
+  securityContext:
+    {{- toYaml . | nindent 4 }}
+{{- end }}
+  args:
+  - tcpwait
+  - -address
+  - {{ $address | quote }}
+{{- with $root.Values.matrixTools.resources.tcpWait }}
+  resources:
+    {{- toYaml . | nindent 4 }}
+{{- end }}
+{{- with .extraVolumeMounts }}
+  volumeMounts:
+  {{- range . }}
+  - {{ (. | toYaml) | nindent 4 }}
+  {{- end }}
+{{- end }}
+{{- end -}}
+{{- end }}
+
+{{- /*
+Renders a tcpWait init container for the valkey endpoint of a component.
+The context is the component values. It must contain the valkey connection settings
+and accepts "suffixName", e.g. "-syn", to append to the default container name.
+*/ -}}
+{{- define "element-io.ess-library.pods.valkeyTcpWait" -}}
+{{- $root := .root -}}
+{{- with required "element-io.ess-library.pods.valkeyTcpWait missing context" .context -}}
+{{- include "element-io.ess-library.pods.tcpWait" (dict "root" $root "context" (dict
+      "name" (printf "valkey-wait%s" (.suffixName | default ""))
+      "address" (include "element-io.valkey.host-port" (dict "root" $root "context" .))
+      "containersSecurityContext" .containersSecurityContext
+      "extraVolumeMounts" .extraVolumeMounts)) -}}
+{{- end -}}
+{{- end }}
+
+{{- /*
+Renders a tcpWait init container for the postgres endpoint of a component.
+The context is the component values. It must contain "postgres" and accepts
+"suffixName", e.g. "-syn", to append to the default container name.
+*/ -}}
+{{- define "element-io.ess-library.pods.postgresTcpWait" -}}
+{{- $root := .root -}}
+{{- with required "element-io.ess-library.pods.postgresTcpWait missing context" .context -}}
+{{- include "element-io.ess-library.pods.tcpWait" (dict "root" $root "context" (dict
+      "name" (printf "db-wait%s" (.suffixName | default ""))
+      "address" (include "element-io.ess-library.postgres-host-port" (dict "root" $root "context" (dict "postgres" .postgres)))
+      "containersSecurityContext" .containersSecurityContext
+      "extraVolumeMounts" .extraVolumeMounts)) -}}
+{{- end -}}
+{{- end }}

@@ -1,0 +1,42 @@
+{{- /*
+Copyright 2024 New Vector Ltd
+Copyright 2026 Element Creations Ltd
+
+SPDX-License-Identifier: AGPL-3.0-only
+*/ -}}
+
+{{- with $.Values.matrixRTC -}}
+{{- if .enabled -}}
+{{- with .sfu -}}
+{{- if and .enabled .exposedServices.turnTLS.enabled (ne .exposedServices.turnTLS.portType "HostPort") -}}
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    {{- include "element-io.matrix-rtc-sfu.labels" (dict "root" $ "context" (mustMergeOverwrite (dict "suffix" "-turn-tls") .)) | nindent 4 }}
+  {{- with .exposedServices.turnTLS.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  name: {{ $.Release.Name }}-matrix-rtc-sfu-turn-tls
+  namespace: {{ $.Release.Namespace }}
+spec:
+  {{- include "element-io.ess-library.service.spec" (dict "root" $ "exposedService" .exposedServices.turnTLS) | nindent 2 }}
+  ports:
+  - name: "turn-tls-tcp"
+    protocol: "TCP"
+    port: {{ .exposedServices.turnTLS.port }}
+  {{- /* LiveKit will advertise the port 443 regardless of the port configured.
+    We hardcode it to 5349 and rely on Kubernetes routing to expose a port of 443 using a LoadBalancer service */}}
+    targetPort: 5349
+    {{- if  (ne .exposedServices.turnTLS.portType "ClusterIP") }}
+    {{- with .exposedServices.turnTLS.nodePort }}
+    nodePort: {{ tpl . (dict "context" $.Values.matrixRTC.sfu.exposedServices.turnTLS "root" $) }}
+    {{- end }}
+    {{- end }}
+  selector:
+    app.kubernetes.io/instance: "{{ $.Release.Name }}-matrix-rtc-sfu"
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

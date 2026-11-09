@@ -1,0 +1,181 @@
+{{- /*
+Copyright 2025 New Vector Ltd
+Copyright 2025-2026 Element Creations Ltd
+
+SPDX-License-Identifier: AGPL-3.0-only
+*/ -}}
+
+{{- $root := .root }}
+{{- with required "matrix-authentication-service/config.yaml.tpl missing context" .context }}
+{{- $context := . -}}
+http:
+  public_base: "https://{{ include "element-io.ess-library.inboundTrafficHandler.host" (dict "root" $root "context" (dict "component" .)) }}"
+  listeners:
+  - name: web
+    binds:
+    - port: 8080
+{{- /*
+While MAS theoretically accepts multiple binds, in practice we received 'Address in use' errors
+Work around this by omitted the host name in the dual-stack case and MAS itself binds 0.0.0.0 && ::
+*/}}
+{{- if eq $root.Values.networking.ipFamily "ipv4"  }}
+      host: "0.0.0.0"
+{{- else if eq $root.Values.networking.ipFamily "ipv6" }}
+      host: "::"
+{{- end }}
+    resources:
+    - name: human
+    - name: discovery
+    - name: oauth
+    - name: compat
+    - name: assets
+    - name: graphql
+      # This lets us use the GraphQL API with an OAuth 2.0 access token,
+      # which we currently use in the ansible modules and in synapse-admin
+      undocumented_oauth2_access: true
+    - name: adminapi
+  - name: internal
+    binds:
+    - port: 8081
+{{- if eq $root.Values.networking.ipFamily "ipv4"  }}
+      host: "0.0.0.0"
+{{- else if eq $root.Values.networking.ipFamily "ipv6" }}
+      host: "::"
+{{- end }}
+    resources:
+    - name: health
+    - name: prometheus
+    - name: connection-info
+
+
+database:
+{{- if .postgres }}
+  host: {{ tpl .postgres.host $root | quote }}
+  port: {{ .postgres.port | default 5432 }}
+  username: {{ .postgres.user | quote }}
+  password_file: /secrets/{{
+                  include "element-io.ess-library.postgres-secret-path" (
+                      dict "root" $root
+                      "context" (dict
+                        "essPassword" "matrixAuthenticationService"
+                        "initSecretKey" "POSTGRES_MATRIX_AUTHENTICATION_SERVICE_PASSWORD"
+                        "componentPasswordPath" "matrixAuthenticationService.postgres.password"
+                        "defaultSecretName" (include "element-io.matrix-authentication-service.secret-name" (dict "root" $root "context" .))
+                        "defaultSecretKey" "POSTGRES_PASSWORD"
+                        "isHook" .isHook
+                      )
+                  ) }}
+  database: {{ .postgres.database | quote }}
+  {{- with .postgres.sslMode }}
+  ssl_mode: {{ . }}
+  {{- end }}
+{{- else if $root.Values.postgres.enabled }}
+  host: {{ $root.Release.Name }}-postgres.{{ $root.Release.Namespace }}.svc.{{ $root.Values.clusterDomain }}
+  port: 5432
+  username: matrixauthenticationservice_user
+  password_file: /secrets/{{
+                  include "element-io.ess-library.postgres-secret-path" (
+                      dict "root" $root
+                      "context" (dict
+                        "essPassword" "matrixAuthenticationService"
+                        "initSecretKey" "POSTGRES_MATRIX_AUTHENTICATION_SERVICE_PASSWORD"
+                        "componentPasswordPath" "matrixAuthenticationService.postgres.password"
+                        "defaultSecretName" (include "element-io.matrix-authentication-service.secret-name" (dict "root" $root "context" .))
+                        "defaultSecretKey" "POSTGRES_PASSWORD"
+                        "isHook" .isHook
+                      )
+                  ) }}
+  database: matrixauthenticationservice
+  ssl_mode: prefer
+{{ end }}
+
+telemetry:
+  metrics:
+    exporter: prometheus
+
+{{- /*
+  If Synapse is enabled the serverName is required by Synapse,
+  and we can use internal Synapse shared secret.
+  If Synapse is disabled, users should provide the whole matrix block,
+  including the servername and the secret, as additional configuration.
+*/ -}}
+{{- if $root.Values.synapse.enabled }}
+matrix:
+  homeserver: "{{ tpl $root.Values.serverName $root }}"
+  secret_file: /secrets/{{
+                include "element-io.ess-library.init-secret-path" (
+                      dict "root" $root
+                      "context" (dict
+                        "secretPath" "matrixAuthenticationService.synapseSharedSecret"
+                        "initSecretKey" "MAS_SYNAPSE_SHARED_SECRET"
+                        "defaultSecretName" (include "element-io.matrix-authentication-service.secret-name" (dict "root" $root "context" .))
+                        "defaultSecretKey" "SYNAPSE_SHARED_SECRET"
+                      )
+                  ) }}
+  endpoint: "http://{{ include "element-io.synapse.internal-hostport" (dict "root" $root) }}"
+{{- /* When in syn2mas dryRun mode, migration has not run yet
+We don't want MAS to change data in Synapse
+*/}}
+{{- if and .syn2mas.enabled .syn2mas.dryRun }}
+  kind: synapse_read_only
+{{- else }}
+  kind: synapse_modern
+{{- end }}
+{{- end }}
+
+secrets:
+  encryption_file: /secrets/{{
+                include "element-io.ess-library.init-secret-path" (
+                      dict "root" $root
+                      "context" (dict
+                        "secretPath" "matrixAuthenticationService.encryptionSecret"
+                        "initSecretKey" "MAS_ENCRYPTION_SECRET"
+                        "defaultSecretName" (include "element-io.matrix-authentication-service.secret-name" (dict "root" $root "context" .))
+                        "defaultSecretKey" "ENCRYPTION_SECRET"
+                      )
+                    ) }}
+  keys:
+  - key_file: /secrets/{{
+                include "element-io.ess-library.init-secret-path" (
+                      dict "root" $root
+                      "context" (dict
+                        "secretPath" "matrixAuthenticationService.privateKeys.rsa"
+                        "initSecretKey" "MAS_RSA_PRIVATE_KEY"
+                        "defaultSecretName" (include "element-io.matrix-authentication-service.secret-name" (dict "root" $root "context" $context))
+                        "defaultSecretKey" "RSA_PRIVATE_KEY"
+                      )
+                    ) }}
+  - key_file: /secrets/{{
+                include "element-io.ess-library.init-secret-path" (
+                      dict "root" $root
+                      "context" (dict
+                        "secretPath" "matrixAuthenticationService.privateKeys.ecdsaPrime256v1"
+                        "initSecretKey" "MAS_ECDSA_PRIME256V1_PRIVATE_KEY"
+                        "defaultSecretName" (include "element-io.matrix-authentication-service.secret-name" (dict "root" $root "context" $context))
+                        "defaultSecretKey" "ECDSA_PRIME256V1_PRIVATE_KEY"
+                      )
+                  ) }}
+{{ if (.privateKeys).ecdsaSecp256k1 }}
+  - key_file: /secrets/{{
+                include "element-io.ess-library.provided-secret-path" (
+                        dict "root" $root
+                        "context" (dict
+                          "secretPath" "matrixAuthenticationService.privateKeys.ecdsaSecp256k1"
+                          "defaultSecretName" (include "element-io.matrix-authentication-service.secret-name" (dict "root" $root "context" $context))
+                          "defaultSecretKey" "ECDSA_SECP256K1_PRIVATE_KEY"
+                        )
+                    ) }}
+{{- end }}
+{{ if (.privateKeys).ecdsaSecp384r1 }}
+  - key_file: /secrets/{{
+                include "element-io.ess-library.provided-secret-path" (
+                        dict "root" $root
+                        "context" (dict
+                          "secretPath" "matrixAuthenticationService.privateKeys.ecdsaSecp384r1"
+                          "defaultSecretName" (include "element-io.matrix-authentication-service.secret-name" (dict "root" $root "context" $context))
+                          "defaultSecretKey" "ECDSA_SECP384R1_PRIVATE_KEY"
+                        )
+                    ) }}
+{{- end }}
+
+{{- end -}}

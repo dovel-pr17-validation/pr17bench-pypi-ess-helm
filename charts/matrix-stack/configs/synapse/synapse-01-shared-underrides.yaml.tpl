@@ -1,0 +1,87 @@
+{{- /*
+Copyright 2025 New Vector Ltd
+Copyright 2025-2026 Element Creations Ltd
+
+SPDX-License-Identifier: AGPL-3.0-only
+*/ -}}
+
+{{- $root := .root -}}
+{{- if $root.Values.elementWeb.enabled }}
+web_client_location: https://{{ include "element-io.ess-library.inboundTrafficHandler.host" (dict "root" $root "context" (dict "component" $root.Values.elementWeb)) }}/
+{{- end }}
+
+report_stats: false
+
+mau_stats_only: true
+
+require_auth_for_profile_requests: true
+
+federation_client_minimum_tls_version: '1.2'
+
+experimental_features:
+  msc4028_push_encrypted_events: true
+{{- if (include "element-io.matrix-authentication-service.readyToHandleAuth" (dict "root" $root)) }}
+  # QR Code Login. Requires MAS
+  msc4108_enabled: true
+{{- end }}
+
+url_preview_enabled: true
+# Both these lists are append only. If there are specific ranges within the denylist
+# that should be allowed, then add them to the allowlist.
+url_preview_ip_range_whitelist: []
+url_preview_ip_range_blacklist:
+- '192.168.0.0/16'
+- '100.64.0.0/10'
+- '192.0.0.0/24'
+- '169.254.0.0/16'
+- '192.88.99.0/24'
+- '198.18.0.0/15'
+- '192.0.2.0/24'
+- '198.51.100.0/24'
+- '203.0.113.0/24'
+- '224.0.0.0/4'
+- '::1/128'
+- 'fe80::/10'
+- 'fc00::/7'
+- '2001:db8::/32'
+- 'ff00::/8'
+- 'fec0::/10'
+
+database:
+  args:
+{{- with $root.Values.synapse.postgres }}
+{{- if eq (.sslMode | default "prefer") "verify-full" }}
+    {{- /*
+    Use the system CA trust store if verify-full is set
+    As per https://www.postgresql.org/docs/18/libpq-connect.html#LIBPQ-CONNECT-SSLROOTCERT
+    it is an error to set this on 'weaker' sslmodes
+    */}}
+    sslrootcert: system
+{{- end }}
+{{- end }}
+    keepalives: 1
+    keepalives_idle: 10
+    keepalives_interval: 10
+    keepalives_count: 3
+
+    # Synapse has no defaults, so up from Twisted's defaults of 3-5
+    cp_min: 5
+    cp_max: 10
+
+{{- if $root.Values.matrixRTC.enabled }}
+# The maximum allowed duration by which sent events can be delayed, as
+# per MSC4140.
+max_event_delay_duration: 24h
+
+rc_message:
+  # This needs to match at least e2ee key sharing frequency plus a bit of headroom
+  # Note key sharing events are bursty
+  per_second: 0.5
+  burst_count: 30
+
+rc_delayed_event_mgmt:
+  # This needs to match at least the heart-beat frequency plus a bit of headroom
+  # Currently the heart-beat is every 5 seconds which translates into a rate of 0.2s
+  per_second: 1
+  burst_count: 20
+{{- end }}

@@ -1,0 +1,85 @@
+{{- /*
+Copyright 2024-2025 New Vector Ltd
+Copyright 2025-2026 Element Creations Ltd
+
+SPDX-License-Identifier: AGPL-3.0-only
+*/ -}}
+
+{{- define "element-io.element-web.validations" }}
+{{- $root := .root -}}
+{{- with required "element-io.element-web.validations missing context" .context -}}
+{{ $messages := list }}
+{{- with include "element-io.ess-library.inboundTrafficHandler.validateHost" (dict "root" $root "context" (dict "component" . "componentName" "elementWeb")) }}
+{{ $messages = append $messages . }}
+{{- end }}
+{{- with .additional }}
+  {{- range $key := (. | keys | uniq | sortAlpha) }}
+    {{- $prop := index $root.Values.elementWeb.additional $key }}
+    {{- $fragment := (tpl $prop $root) | fromJson }}
+    {{- if hasKey $fragment "Error" }}
+{{ $messages = append $messages (printf "elementWeb.additional['%s'] is invalid: %s" $key $fragment.Error) }}
+    {{- end }}
+  {{- end }}
+{{- end }}
+{{ $messages | toJson }}
+{{- end }}
+{{- end }}
+
+{{- define "element-io.element-web.labels" -}}
+{{- $root := .root -}}
+{{- with required "element-io.element-web.labels missing context" .context -}}
+{{ include "element-io.ess-library.labels.common" (dict "root" $root "context" (dict "labels" .labels "withChartVersion" .withChartVersion)) }}
+app.kubernetes.io/component: matrix-client
+app.kubernetes.io/name: element-web
+app.kubernetes.io/instance: {{ $root.Release.Name }}-element-web
+app.kubernetes.io/version: {{ include "element-io.ess-library.labels.makeSafe" .image.tag }}
+{{- end }}
+{{- end }}
+
+{{- define "element-io.element-web.overrideEnv" -}}
+{{- $root := .root -}}
+{{- with required "element-io.element-web.overrideEnv missing context" .context -}}
+{{- /*
+https://github.com/nginxinc/docker-nginx/blob/1.26.1/entrypoint/20-envsubst-on-templates.sh#L31-L45
+If pods run with a GID of 0 this makes $output_dir to appear writable to sh, however
+due to running with a read-only FS the actual writing later fails. We short circuit this by using an
+invalid template directory and so templating as a whole is skipped by the script
+*/ -}}
+env:
+- name: "NGINX_ENVSUBST_TEMPLATE_DIR"
+  value: "/non-existant-so-that-this-works-with-read-only-root-filesystem"
+{{- end -}}
+{{- end -}}
+
+
+{{- define "element-io.element-web.inboundTrafficHandler.paths" -}}
+{{- $root := .root -}}
+{{- with required "element-io.element-web.inboundTrafficHandler.paths missing context" .context -}}
+- path: /
+  serviceName: {{ $root.Release.Name }}-element-web
+  servicePortName: web
+  servicePortNumber: 80
+{{- end -}}
+{{- end -}}
+
+{{- define "element-io.element-web.nginx-configmap-data" }}
+{{- $root := .root }}
+default.conf: |
+  {{- tpl ($root.Files.Get "configs/element-web/default.conf.tpl") (dict "root" $root "context" .) | nindent 2 }}
+# Customisations that we do at the http rather than the server level
+http_customisations.conf: |
+  {{- tpl ($root.Files.Get "configs/element-web/http_customisations.conf.tpl") (dict "root" $root "context" .) | nindent 2 }}
+# For repeated inclusion in default.conf because the add_header directives need to be repeated as per
+# https://nginx.org/en/docs/http/ngx_http_headers_module.html#add_header as they are only inherited from
+# the server block iff there's no add_header directives in the location block
+security_headers.conf: |
+  {{- ($root.Files.Get "configs/element-web/security_headers.conf") | nindent 2 }}
+{{- end }}
+
+{{- define "element-io.element-web.configmap-data" -}}
+{{- $root := .root }}
+{{- with required "element-io.element-web.configmap-data missing context" .context -}}
+config.json: |
+{{- (tpl ($root.Files.Get "configs/element-web/config.json.tpl") (dict "root" $root "context" .)) | nindent 2 }}
+{{- end }}
+{{- end }}

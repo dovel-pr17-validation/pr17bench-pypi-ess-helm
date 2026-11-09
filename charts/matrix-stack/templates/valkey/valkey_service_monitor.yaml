@@ -1,0 +1,39 @@
+{{- /*
+Copyright 2026 Element Creations Ltd
+
+SPDX-License-Identifier: AGPL-3.0-only
+*/ -}}
+
+{{- if (include "element-io.valkey.internalValkeyEnabled" (dict "root" $)) -}}
+{{- with (mustMergeOverwrite ($.Values.valkey | deepCopy) ($.Values.redis | deepCopy)) -}}
+{{- if $.Capabilities.APIVersions.Has "monitoring.coreos.com/v1/ServiceMonitor" }}
+{{- if .serviceMonitors.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  labels:
+    {{- include "element-io.valkey.labels" (dict "root" $ "context" .) | nindent 4 }}
+  name: {{ $.Release.Name }}-valkey
+  namespace: {{ $.Release.Namespace }}
+spec:
+  endpoints:
+  - interval: 30s
+    port: metrics
+    relabelings:
+    - targetLabel: instance
+      sourceLabels: [__meta_kubernetes_pod_label_app_kubernetes_io_instance]
+      action: replace
+    {{- with .serviceMonitors.relabelings }}
+      {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- with .serviceMonitors.metricRelabelings }}
+    metricRelabelings:
+      {{- toYaml . | nindent 4 }}
+    {{- end }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ $.Release.Name }}-valkey
+{{- end }}
+{{- end }}
+{{- end -}}
+{{- end -}}

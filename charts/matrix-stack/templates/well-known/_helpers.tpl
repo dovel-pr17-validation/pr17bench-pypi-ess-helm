@@ -1,0 +1,119 @@
+{{- /*
+Copyright 2024-2025 New Vector Ltd
+Copyright 2025-2026 Element Creations Ltd
+
+SPDX-License-Identifier: AGPL-3.0-only
+*/ -}}
+
+{{- define "element-io.well-known-delegation.validations" }}
+{{ $root := .root }}
+{{- with required "element-io.well-known-delegation.validations missing context" .context -}}
+{{- $messages := list }}
+{{- if not $root.Values.serverName -}}
+{{ $messages = append $messages "serverName is required when wellKnownDelegation.enabled=true" }}
+{{- end }}
+{{- with .additional }}
+  {{ range $key := list "client" "server" "support" }}
+    {{- with ($root.Values.wellKnownDelegation.additional | dig $key "{}") }}
+      {{- $additional := . | fromJson -}}
+      {{- if hasKey $additional "Error" }}
+{{ $messages = append $messages (printf "wellKnownDelegation.additional.%s is invalid: %s" $key $additional.Error) }}
+      {{- end }}
+    {{- end }}
+  {{- end }}
+{{- end }}
+{{ $messages | toJson }}
+{{- end }}
+{{- end }}
+
+{{- define "element-io.well-known-delegation.labels" -}}
+{{- $root := .root -}}
+{{- with required "element-io.well-known-delegation.labels missing context" .context -}}
+{{ include "element-io.ess-library.labels.common" (dict "root" $root "context" (dict "labels" .labels)) }}
+app.kubernetes.io/component: matrix-delegation
+app.kubernetes.io/name: well-known-delegation
+app.kubernetes.io/instance: {{ $root.Release.Name }}-well-known-delegation
+app.kubernetes.io/version: {{ include "element-io.ess-library.labels.makeSafe" $root.Values.haproxy.image.tag }}
+{{- end }}
+{{- end }}
+
+{{- define "element-io.well-known-delegation-ingress.labels" -}}
+{{- $root := .root -}}
+{{- with required "element-io.well-known-delegation-ingress.labels missing context" .context -}}
+{{ include "element-io.ess-library.labels.common" (dict "root" $root "context" (dict "labels" .labels)) }}
+app.kubernetes.io/component: matrix-stack-ingress
+app.kubernetes.io/name: well-known-ingress
+app.kubernetes.io/instance: {{ $root.Release.Name }}-well-known-ingress
+app.kubernetes.io/version: {{ include "element-io.ess-library.labels.makeSafe" .image.tag }}
+k8s.element.io/target-name: haproxy
+k8s.element.io/target-instance: {{ $root.Release.Name }}-haproxy
+{{- end }}
+{{- end }}
+
+
+{{- define "element-io.well-known-delegation.client" }}
+{{- $root := .root -}}
+{{- with required "element-io.well-known-delegation.client missing context" .context -}}
+{{- $config := dict -}}
+{{- if $root.Values.synapse.enabled -}}
+{{- with required "WellKnownDelegation requires a host to be set for Synapse's active inbound traffic handler" (include "element-io.ess-library.inboundTrafficHandler.host" (dict "root" $root "context" (dict "component" $root.Values.synapse))) -}}
+{{- $mHomeserver := dict "base_url" (printf "https://%s" .) -}}
+{{- $_ := set $config "m.homeserver" $mHomeserver -}}
+{{- end -}}
+{{- end -}}
+{{- if $root.Values.matrixRTC.enabled -}}
+{{- $_ := set $config "org.matrix.msc4143.rtc_foci" (list (dict "type" "livekit" "livekit_service_url" (printf "https://%s" (include "element-io.ess-library.inboundTrafficHandler.host" (dict "root" $root "context" (dict "component" $root.Values.matrixRTC)))))) -}}
+{{- end -}}
+{{- $additional := .additional.client | fromJson -}}
+{{- tpl (toPrettyJson (mustMergeOverwrite $additional $config)) $root -}}
+{{- end -}}
+{{- end }}
+
+{{- define "element-io.well-known-delegation.server" }}
+{{- $root := .root -}}
+{{- with required "element-io.well-known-delegation.server missing context" .context -}}
+{{- $config := dict -}}
+{{- if $root.Values.synapse.enabled -}}
+{{- with required "WellKnownDelegation requires a host to be set for Synapse's active inbound traffic handler" (include "element-io.ess-library.inboundTrafficHandler.host" (dict "root" $root "context" (dict "component" $root.Values.synapse))) -}}
+{{- $_ := set $config "m.server" (printf "%s:443" .) -}}
+{{- end -}}
+{{- end -}}
+{{- $additional := .additional.server | fromJson -}}
+{{- tpl (toPrettyJson (mustMergeOverwrite $additional $config)) $root -}}
+{{- end -}}
+{{- end }}
+
+{{- define "element-io.well-known-delegation.support" }}
+{{- $root := .root -}}
+{{- with required "element-io.well-known-delegation.support missing context" .context -}}
+{{- $config := dict -}}
+{{- $additional := .additional.support | fromJson -}}
+{{- tpl (toPrettyJson (mustMergeOverwrite $additional $config)) $root -}}
+{{- end -}}
+{{- end }}
+
+{{- define "element-io.well-known-delegation.inboundTrafficHandler.paths" -}}
+{{- $root := .root -}}
+{{- with required "element-io.well-known-delegation.inboundTrafficHandler.paths missing context" .context -}}
+{{- if and .baseDomainRedirect.enabled (or $root.Values.elementWeb.enabled .baseDomainRedirect.url) }}
+- path: /
+{{- else }}
+- path: /.well-known/matrix
+{{- end }}
+  serviceName: {{ $root.Release.Name }}-well-known
+  servicePortName: haproxy-wkd
+  servicePortNumber: 8010
+{{- end -}}
+{{- end -}}
+
+{{- define "element-io.well-known-delegation.configmap-data" -}}
+{{- $root := .root -}}
+{{- with required "element-io.well-known-delegation.configmap-data missing context" .context -}}
+client: |
+  {{- (tpl (include "element-io.well-known-delegation.client" (dict "root" $root "context" .)) $root) | nindent 2 }}
+server: |
+  {{- (tpl (include "element-io.well-known-delegation.server" (dict "root" $root "context" .)) $root) | nindent 2 }}
+support: |
+  {{- (tpl (include "element-io.well-known-delegation.support" (dict "root" $root "context" .)) $root) | nindent 2 }}
+{{- end -}}
+{{- end -}}
